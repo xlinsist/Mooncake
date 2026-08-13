@@ -151,7 +151,51 @@ and verify requests terminate without incorrect data, deadlock, or a process
 crash. The harness stops the listener process instead of modifying the IPoIB
 link.
 
-## 7. Cleanup
+`nof_worker_pool_bench` now has an I/O completion deadline. Set
+`BENCH_IO_TIMEOUT` in `config.env`; a stuck run emits `benchmark_timeout=1` and
+`outstanding_ops=<count>`, then exits with status 124. `run.sh` also wraps the
+process in `timeout --kill-after` so a target failure cannot strand an
+unattended characterization run. Status 124 is a failed sample, never a
+performance result.
+
+## 7. Local / remote characterization
+
+Configure `LOCAL_NVME_DEVICE`, its physical serial, and
+`CLIENT_NET_INTERFACE` (the Linux network interface, not the verbs device).
+The local device safety and serial checks are mandatory even though the
+characterization matrix issues only direct reads. Then run:
+
+```bash
+./run.sh characterize
+```
+
+The default matrix covers 4 KiB, 64 KiB, 256 KiB, 1 MiB, 4 MiB, 16 MiB,
+64 MiB, 256 MiB, and 1 GiB objects with three repeats. Local background load is
+calibrated from the device's 4-KiB random-read IOPS and rate-limited to
+0/25/50/75/90 percent of that reference. Remote offered load uses a separate
+4-KiB random-read NoF stream at a proportional queue depth; this is an offered
+load level, not a claim of exact NIC utilization. Each foreground run records
+host CPU, NIC byte rates, local block-device busy time, process CPU, and raw
+SPDK bdev I/O-stat snapshots. The CSV's remote weighted-busy percentage is a
+latency-tick estimate; use the preserved SPDK snapshots for device-specific
+interpretation.
+
+Results are written under `results/<timestamp>/characterization/`:
+
+- `raw/`: fio JSON, NoF logs, exit codes, and background-load logs;
+- `telemetry/`: host samples, process resource usage, and SPDK snapshots;
+- `runs.csv` and `summary.csv`: per-run and median unified metrics;
+- `crossover.csv`: local-load and remote-load comparisons by size;
+- `size-bandwidth.svg` and `crossover.svg`: size curve and decision map;
+- `conclusion.json`: Go/No-Go result and aggregation-test status.
+
+The automated Go criterion is deliberately narrow: at least one nonzero local
+load and object-size combination must have lower remote p95 latency with no
+errors. It does not claim multi-SSD aggregation; that remains marked untested
+until additional namespaces or targets are configured. Rebuild summaries and
+plots without rerunning hardware tests with `./run.sh characterize-summarize`.
+
+## 8. Cleanup
 
 ```bash
 ./run.sh unregister

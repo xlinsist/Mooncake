@@ -209,3 +209,5 @@ core_*
 # MacOS
 .DS_Store
 .envrc
+
+.omx

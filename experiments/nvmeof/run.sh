@@ -2,6 +2,10 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
+: "${BENCH_IO_TIMEOUT:=30}"
+: "${BENCH_KILL_GRACE:=5}"
+: "${CHAR_IODEPTH:=32}"
+
 export PYTHONPATH="$BUILD_DIR/mooncake-integration${PYTHONPATH:+:$PYTHONPATH}"
 
 run_store_python() {
@@ -84,15 +88,21 @@ run_nof_matrix() {
           log "NoF $name"
           if [[ -x /usr/bin/time ]]; then
             /usr/bin/time -v -o "$RESULT_DIR/telemetry/$name.time" \
+              timeout --signal=TERM --kill-after="${BENCH_KILL_GRACE:-5}s" \
+              "$((BENCH_RUNTIME + BENCH_WARMUP + BENCH_IO_TIMEOUT + BENCH_KILL_GRACE + 5))s" \
               sudo -n "$bench" --endpoints="$endpoint" --rw="$rw" --bs="$block_size" \
               --iodepth="$depth" --runtime="$BENCH_RUNTIME" \
               --ramp_time="$BENCH_WARMUP" --size="$TEST_BYTES" \
+              --io_timeout_sec="${BENCH_IO_TIMEOUT:-30}" \
               --nof_workers=4 --nof_submit_chunk_bytes=131072 \
               --nof_inflight_bytes_limit=33554432 2>&1 | tee "$RESULT_DIR/nof/$name.log"
           else
-            sudo -n "$bench" --endpoints="$endpoint" --rw="$rw" --bs="$block_size" \
+            timeout --signal=TERM --kill-after="${BENCH_KILL_GRACE:-5}s" \
+              "$((BENCH_RUNTIME + BENCH_WARMUP + BENCH_IO_TIMEOUT + BENCH_KILL_GRACE + 5))s" \
+              sudo -n "$bench" --endpoints="$endpoint" --rw="$rw" --bs="$block_size" \
               --iodepth="$depth" --runtime="$BENCH_RUNTIME" \
               --ramp_time="$BENCH_WARMUP" --size="$TEST_BYTES" \
+              --io_timeout_sec="${BENCH_IO_TIMEOUT:-30}" \
               --nof_workers=4 --nof_submit_chunk_bytes=131072 \
               --nof_inflight_bytes_limit=33554432 2>&1 | tee "$RESULT_DIR/nof/$name.log"
           fi
@@ -113,6 +123,134 @@ run_nof_matrix() {
   (rdma statistic show || true) >"$RESULT_DIR/telemetry/rdma-after.txt" 2>&1
   target "'$SPDK_DIR/scripts/rpc.py' bdev_nvme_get_controller_health_info 2>/dev/null || true" \
     >"$RESULT_DIR/telemetry/spdk-health-after.json"
+}
+
+run_characterization() {
+  need fio
+  need timeout
+  [[ -n ${LOCAL_NVME_DEVICE:-} ]] || die "LOCAL_NVME_DEVICE is required"
+  [[ -n ${LOCAL_NVME_SERIAL:-} ]] || die "LOCAL_NVME_SERIAL is required"
+  [[ -n ${CLIENT_NET_INTERFACE:-} ]] || die "CLIENT_NET_INTERFACE is required"
+  local bench="$BUILD_DIR/mooncake-store/benchmarks/nof_worker_pool_bench"
+  [[ -x $bench ]] || die "benchmark binary missing: $bench"
+  local actual_serial
+  actual_serial=$(sudo -n nvme id-ctrl "$LOCAL_NVME_DEVICE" | awk -F: '/^sn[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}')
+  [[ $actual_serial == "$LOCAL_NVME_SERIAL" ]] ||
+    die "local NVMe serial mismatch: expected $LOCAL_NVME_SERIAL, got $actual_serial"
+  device_is_safe "$LOCAL_NVME_DEVICE"
+
+  local out="$RESULT_DIR/characterization"
+  mkdir -p "$out/raw/local" "$out/raw/remote" "$out/raw/load" "$out/telemetry"
+  local calibration="$out/raw/load/local-calibration.json"
+  sudo -n fio --name=local-calibration --filename="$LOCAL_NVME_DEVICE" \
+    --rw=randread --bs=4096 --iodepth="${CHAR_IODEPTH:-32}" --ioengine=libaio \
+    --direct=1 --time_based=1 --runtime="$BENCH_RUNTIME" --ramp_time="$BENCH_WARMUP" \
+    --size="$TEST_BYTES" --group_reporting=1 --output-format=json+ --output="$calibration"
+  local calibration_iops
+  calibration_iops=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(int(d["jobs"][0]["read"]["iops"]))' "$calibration")
+  [[ $calibration_iops -gt 0 ]] || die "local calibration produced zero IOPS"
+
+  local size load run name load_pid load_iops status timeout_sec depth inflight
+  local remote_load_pid=""
+  cleanup_characterization_loads() {
+    if [[ -n ${load_pid:-} ]]; then
+      sudo -n kill "$load_pid" 2>/dev/null || true
+      wait "$load_pid" 2>/dev/null || true
+    fi
+    if [[ -n ${remote_load_pid:-} ]]; then
+      sudo -n kill "$remote_load_pid" 2>/dev/null || true
+      wait "$remote_load_pid" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_characterization_loads EXIT INT TERM
+  for load in ${CHAR_LOADS:-0 25 50 75 90}; do
+    load_pid=""
+    if [[ $load -gt 0 ]]; then
+      load_iops=$((calibration_iops * load / 100))
+      sudo -n fio --name="local-load-$load" --filename="$LOCAL_NVME_DEVICE" \
+        --rw=randread --bs=4096 --iodepth="${CHAR_IODEPTH:-32}" --ioengine=libaio \
+        --direct=1 --time_based=1 --runtime=86400 \
+        --rate_iops="$load_iops" --size="$TEST_BYTES" --group_reporting=1 \
+        --output-format=json+ --output="$out/raw/load/local-load-$load.json" &
+      load_pid=$!
+      sleep 2
+    fi
+    for size in ${CHAR_SIZES:-4096 65536 262144 1048576 4194304 16777216 67108864 268435456 1073741824}; do
+      depth=$((1073741824 / size))
+      [[ $depth -gt $CHAR_IODEPTH ]] && depth=$CHAR_IODEPTH
+      [[ $depth -gt 0 ]] || depth=1
+      for run in $(seq 1 "$REPETITIONS"); do
+        name="local-size${size}-load${load}-run${run}"
+        python3 "$(dirname "$0")/telemetry.py" \
+          --output "$out/telemetry/$name.system.json" \
+          --interface "$CLIENT_NET_INTERFACE" --device "$LOCAL_NVME_DEVICE" -- \
+          sudo -n fio --name="$name" --filename="$LOCAL_NVME_DEVICE" --rw=read \
+          --bs="$size" --iodepth="$depth" --ioengine=libaio \
+          --direct=1 --time_based=1 --runtime="$BENCH_RUNTIME" --ramp_time="$BENCH_WARMUP" \
+          --size="$TEST_BYTES" --group_reporting=1 --output-format=json+ \
+          --output="$out/raw/local/$name.json"
+      done
+    done
+    if [[ -n $load_pid ]]; then
+      sudo -n kill "$load_pid" 2>/dev/null || true
+      wait "$load_pid" 2>/dev/null || true
+    fi
+  done
+
+  timeout_sec=$((BENCH_RUNTIME + BENCH_WARMUP + BENCH_IO_TIMEOUT + BENCH_KILL_GRACE + 5))
+  local remote_load_depth
+  for load in ${CHAR_REMOTE_LOADS:-0 25 50 75 90}; do
+    remote_load_pid=""
+    if [[ $load -gt 0 ]]; then
+      remote_load_depth=$((CHAR_IODEPTH * load / 100))
+      [[ $remote_load_depth -gt 0 ]] || remote_load_depth=1
+      timeout --signal=TERM --kill-after="${BENCH_KILL_GRACE:-5}s" \
+        86400s sudo -n "$bench" --endpoints="$endpoint" \
+        --rw=randread --bs=4096 --iodepth="$remote_load_depth" \
+        --runtime=86400 --ramp_time=0 --size="$TEST_BYTES" \
+        --io_timeout_sec="${BENCH_IO_TIMEOUT:-30}" \
+        >"$out/raw/load/remote-load-$load.log" 2>&1 &
+      remote_load_pid=$!
+      sleep 2
+    fi
+    for size in ${CHAR_SIZES:-4096 65536 262144 1048576 4194304 16777216 67108864 268435456 1073741824}; do
+      depth=$((1073741824 / size))
+      [[ $depth -gt $CHAR_IODEPTH ]] && depth=$CHAR_IODEPTH
+      [[ $depth -gt 0 ]] || depth=1
+      inflight=$((size * depth))
+      [[ $inflight -lt 134217728 ]] && inflight=134217728
+      for run in $(seq 1 "$REPETITIONS"); do
+        name="remote-size${size}-load${load}-run${run}"
+        target "'$SPDK_DIR/scripts/rpc.py' bdev_get_iostat" \
+          >"$out/telemetry/$name.spdk-before.json" 2>&1 || true
+        set +e
+        timeout --signal=TERM --kill-after="${BENCH_KILL_GRACE:-5}s" "${timeout_sec}s" \
+          python3 "$(dirname "$0")/telemetry.py" \
+          --output "$out/telemetry/$name.system.json" \
+          --interface "$CLIENT_NET_INTERFACE" --device "$LOCAL_NVME_DEVICE" -- \
+          /usr/bin/time -v -o "$out/telemetry/$name.time" \
+          sudo -n "$bench" --endpoints="$endpoint" --rw=read --bs="$size" \
+          --iodepth="$depth" --runtime="$BENCH_RUNTIME" --ramp_time="$BENCH_WARMUP" \
+          --size="$TEST_BYTES" --io_timeout_sec="${BENCH_IO_TIMEOUT:-30}" \
+          --nof_workers=4 --nof_submit_chunk_bytes=131072 \
+          --nof_inflight_bytes_limit="$inflight" \
+          >"$out/raw/remote/$name.log" 2>&1
+        status=$?
+        set -e
+        target "'$SPDK_DIR/scripts/rpc.py' bdev_get_iostat" \
+          >"$out/telemetry/$name.spdk-after.json" 2>&1 || true
+        printf '%s\n' "$status" >"$out/raw/remote/$name.exitcode"
+        [[ $status -eq 0 ]] || log "remote case failed: $name (exit $status)"
+      done
+    done
+    if [[ -n $remote_load_pid ]]; then
+      sudo -n kill "$remote_load_pid" 2>/dev/null || true
+      wait "$remote_load_pid" 2>/dev/null || true
+    fi
+  done
+  python3 "$(dirname "$0")/characterize.py" summarize "$out"
+  python3 "$(dirname "$0")/characterize.py" plot "$out/summary.csv" "$out"
+  trap - EXIT INT TERM
 }
 
 export TARGET_ADDR TARGET_NVME_SERIAL CLIENT_RDMA_DEVICE LOCAL_HOSTNAME
@@ -174,6 +312,11 @@ case ${1:-help} in
   correctness) run_store_python "$(dirname "$0")/correctness.py" run --output "$RESULT_DIR/correctness.json" ;;
   stability) run_store_python "$(dirname "$0")/correctness.py" stability --seconds "${STABILITY_SECONDS:-60}" --output "$RESULT_DIR/stability.json" ;;
   nof-benchmark) run_nof_matrix ;;
+  characterize) run_characterization ;;
+  characterize-summarize)
+    python3 "$(dirname "$0")/characterize.py" summarize "$RESULT_DIR/characterization"
+    python3 "$(dirname "$0")/characterize.py" plot "$RESULT_DIR/characterization/summary.csv" "$RESULT_DIR/characterization"
+    ;;
   summarize) python3 "$(dirname "$0")/summarize.py" "$RESULT_DIR" ;;
   post-smart)
     mkdir -p "$RESULT_DIR/smart"

@@ -37,6 +37,7 @@ constexpr uint64_t kDefaultDurationSec = 30;
 constexpr uint64_t kDefaultReportIntervalMs = 1000;
 constexpr uint64_t kDefaultRangeBytes = 1 * GiB;
 constexpr uint64_t kDefaultWarmupSec = 3;
+constexpr uint64_t kDefaultIoTimeoutSec = 30;
 constexpr char kDefaultOp[] = "read";
 
 DEFINE_string(
@@ -78,6 +79,10 @@ DEFINE_uint64(seed, 1, "Random seed used when --random_lba or --op=mixed.");
 DEFINE_uint64(warmup_sec, 3,
               "Warmup duration in seconds before measurement starts.");
 DEFINE_uint64(ramp_time, 0, "fio-style alias for --warmup_sec.");
+DEFINE_uint64(
+    io_timeout_sec, kDefaultIoTimeoutSec,
+    "Maximum time to wait for I/O after the measurement window ends. Exits "
+    "with status 124 when outstanding NoF I/O cannot complete.");
 DEFINE_uint64(
     nof_workers, 0,
     "Optional override for MC_NOF_WORKERS. Equivalent to exporting "
@@ -290,6 +295,7 @@ struct EndpointContext {
 struct EndpointStats {
     BenchStats measured;
     LiveCounters live;
+    std::atomic<uint64_t> outstanding_ops{0};
 };
 
 struct Slot {
@@ -347,7 +353,9 @@ void WorkerLoop(BenchThreadContext *thread_context,
                 std::vector<EndpointStats> *endpoint_stats,
                 mooncake::SpdkNofWorkerPool *pool, BenchOp op_mode,
                 TimePoint warmup_end, TimePoint end,
-                std::atomic<size_t> *active_threads);
+                std::chrono::seconds io_timeout,
+                std::atomic<size_t> *active_threads,
+                std::atomic<bool> *io_timed_out);
 void FreeThreadSlots(mooncake::SpdkWrapper &wrapper,
                      std::vector<BenchThreadContext> &thread_contexts);
 
@@ -555,6 +563,7 @@ void SubmitSlot(Slot &slot, EndpointContext &endpoint, size_t endpoint_index,
                                slot.state);
     pool.submitTask(std::move(task));
     slot.active = true;
+    endpoint_stats.outstanding_ops.fetch_add(1, std::memory_order_relaxed);
 
     if (measure_now) {
         endpoint_stats.measured.RecordSubmit();
@@ -567,7 +576,9 @@ void WorkerLoop(BenchThreadContext *thread_context,
                 std::vector<EndpointStats> *endpoint_stats,
                 mooncake::SpdkNofWorkerPool *pool, BenchOp op_mode,
                 TimePoint warmup_end, TimePoint end,
-                std::atomic<size_t> *active_threads) {
+                std::chrono::seconds io_timeout,
+                std::atomic<size_t> *active_threads,
+                std::atomic<bool> *io_timed_out) {
     uint64_t submit_seq = static_cast<uint64_t>(thread_context->thread_index)
                           << 48;
 
@@ -594,6 +605,9 @@ void WorkerLoop(BenchThreadContext *thread_context,
                 }
                 any_active = true;
                 if (!slot.future || !slot.future->isReady()) {
+                    if (now_before_scan - slot.submit_time >= io_timeout) {
+                        io_timed_out->store(true, std::memory_order_relaxed);
+                    }
                     continue;
                 }
 
@@ -601,6 +615,7 @@ void WorkerLoop(BenchThreadContext *thread_context,
                 mooncake::ErrorCode result = slot.future->get();
                 slot.active = false;
                 slot.future.reset();
+                stats.outstanding_ops.fetch_sub(1, std::memory_order_relaxed);
 
                 if (slot.measure) {
                     if (result == mooncake::ErrorCode::OK) {
@@ -705,6 +720,10 @@ int main(int argc, char **argv) {
         }
         if (FLAGS_duration_sec == 0) {
             LOG(ERROR) << "--duration_sec must be greater than 0";
+            return 1;
+        }
+        if (FLAGS_io_timeout_sec == 0) {
+            LOG(ERROR) << "--io_timeout_sec must be greater than 0";
             return 1;
         }
 
@@ -842,14 +861,16 @@ int main(int argc, char **argv) {
         TimePoint start = Clock::now();
         TimePoint warmup_end = start + std::chrono::seconds(FLAGS_warmup_sec);
         TimePoint end = warmup_end + std::chrono::seconds(FLAGS_duration_sec);
-
         std::vector<std::thread> workers;
         workers.reserve(thread_contexts.size());
         std::atomic<size_t> active_threads(thread_contexts.size());
+        std::atomic<bool> io_timed_out(false);
         for (auto &thread_context : thread_contexts) {
             workers.emplace_back(WorkerLoop, &thread_context, &endpoints,
                                  &endpoint_stats, &pool, op_mode, warmup_end,
-                                 end, &active_threads);
+                                 end,
+                                 std::chrono::seconds(FLAGS_io_timeout_sec),
+                                 &active_threads, &io_timed_out);
         }
 
         TimePoint next_report =
@@ -858,6 +879,21 @@ int main(int argc, char **argv) {
 
         while (active_threads.load(std::memory_order_relaxed) > 0) {
             TimePoint now = Clock::now();
+            if (io_timed_out.load(std::memory_order_relaxed)) {
+                uint64_t pending_ops = 0;
+                for (const auto &stats : endpoint_stats) {
+                    pending_ops +=
+                        stats.outstanding_ops.load(std::memory_order_relaxed);
+                }
+                std::cerr << "benchmark_timeout=1\n"
+                          << "io_timeout_sec=" << FLAGS_io_timeout_sec << "\n"
+                          << "outstanding_ops=" << pending_ops << "\n";
+                std::cerr.flush();
+
+                // A stopped target can leave SPDK polling indefinitely. In
+                // that state joining workers or destroying the pool deadlocks.
+                std::_Exit(124);
+            }
             if (now < next_report) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
