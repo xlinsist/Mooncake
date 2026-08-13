@@ -5,6 +5,16 @@ source "$(dirname "$0")/lib.sh"
 : "${BENCH_IO_TIMEOUT:=30}"
 : "${BENCH_KILL_GRACE:=5}"
 : "${CHAR_IODEPTH:=32}"
+: "${SAME_SSD_SERVICE:=mooncake-nof-spdk.service}"
+: "${SAME_SSD_SIZES:=4096 65536 262144 1048576 4194304 16777216}"
+: "${SAME_SSD_DEPTHS:=1 8 32}"
+: "${SAME_SSD_REPETITIONS:=3}"
+: "${SAME_SSD_WARMUP:=2}"
+: "${SAME_SSD_RUNTIME:=15}"
+: "${SAME_SSD_TARGET_CPU_MASK:=0xff}"
+: "${SAME_SSD_CLIENT_CPUS:=0-7}"
+: "${SAME_SSD_MAX_SRQ_DEPTH:=128}"
+: "${SAME_SSD_INFLIGHT_BYTES:=8388608}"
 
 export PYTHONPATH="$BUILD_DIR/mooncake-integration${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -266,6 +276,203 @@ EOF
   trap - EXIT INT TERM
 }
 
+same_ssd_remote_run() {
+  local phase=$1 out=$2 size=$3 depth=$4 run=$5
+  local bench="${SAME_SSD_CLIENT_BUILD_DIR:-$BUILD_DIR}/mooncake-store/benchmarks/nof_worker_pool_bench"
+  local name="$phase-size${size}-qd${depth}-run${run}"
+  local status=0 timeout_sec
+  timeout_sec=$((SAME_SSD_WARMUP + SAME_SSD_RUNTIME + BENCH_IO_TIMEOUT + BENCH_KILL_GRACE + 5))
+  set +e
+  if [[ -n ${SAME_SSD_CLIENT_SSH:-} ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$SAME_SSD_CLIENT_SSH" \
+      "timeout --signal=TERM --kill-after='${BENCH_KILL_GRACE}s' '${timeout_sec}s' sudo -n taskset -c '$SAME_SSD_CLIENT_CPUS' '$bench' --endpoints='$endpoint' --rw=read --bs='$size' --iodepth='$depth' --runtime='$SAME_SSD_RUNTIME' --ramp_time='$SAME_SSD_WARMUP' --size='$TEST_BYTES' --io_timeout_sec='$BENCH_IO_TIMEOUT' --nof_workers=4 --nof_submit_chunk_bytes=131072 --nof_inflight_bytes_limit='$SAME_SSD_INFLIGHT_BYTES'" \
+      >"$out/raw/$phase/$name.log" 2>&1
+  else
+    timeout --signal=TERM --kill-after="${BENCH_KILL_GRACE}s" "${timeout_sec}s" \
+      sudo -n taskset -c "$SAME_SSD_CLIENT_CPUS" "$bench" \
+      --endpoints="$endpoint" --rw=read --bs="$size" \
+      --iodepth="$depth" --runtime="$SAME_SSD_RUNTIME" \
+      --ramp_time="$SAME_SSD_WARMUP" --size="$TEST_BYTES" \
+      --io_timeout_sec="$BENCH_IO_TIMEOUT" --nof_workers=4 \
+      --nof_submit_chunk_bytes=131072 \
+      --nof_inflight_bytes_limit="$SAME_SSD_INFLIGHT_BYTES" \
+      >"$out/raw/$phase/$name.log" 2>&1
+  fi
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$out/raw/$phase/$name.exitcode"
+  [[ $status -eq 0 ]] || log "same-SSD remote case failed: $name (exit $status)"
+}
+
+same_ssd_verify_listener() {
+  target "'$SPDK_DIR/scripts/rpc.py' nvmf_get_subsystems" | python3 -c '
+import json, sys
+nqn, address, port, nsid = sys.argv[1:]
+for subsystem in json.load(sys.stdin):
+    if subsystem.get("nqn") != nqn:
+        continue
+    namespaces = {str(item.get("nsid")) for item in subsystem.get("namespaces", [])}
+    listeners = subsystem.get("listen_addresses", [])
+    if nsid in namespaces and any(
+        item.get("trtype", "").upper() == "RDMA"
+        and item.get("traddr") == address
+        and str(item.get("trsvcid")) == port for item in listeners
+    ):
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$NQN" "$TARGET_ADDR" "$TRSVCID" "$NSID"
+}
+
+same_ssd_probe() {
+  local output=$1
+  SAME_SSD_WARMUP=0 SAME_SSD_RUNTIME=1 same_ssd_remote_run \
+    capability "$output" 4096 1 0
+  [[ $(<"$output/raw/capability/capability-size4096-qd1-run0.exitcode") == 0 ]]
+}
+
+same_ssd_start_target() {
+  local rpc="$SPDK_DIR/scripts/rpc.py"
+  target "sudo -n systemd-run --unit='${SAME_SSD_SERVICE%.service}' --property=LimitMEMLOCK=infinity '$SPDK_DIR/build/bin/nvmf_tgt' -m '$SAME_SSD_TARGET_CPU_MASK' --wait-for-rpc"
+  local attempt ready=false
+  for attempt in $(seq 1 30); do
+    if target "'$rpc' rpc_get_methods >/dev/null 2>&1"; then
+      ready=true
+      break
+    fi
+    sleep 1
+  done
+  [[ $ready == true ]] || die "SPDK RPC socket did not become ready"
+  target "'$rpc' framework_start_init"
+  target "'$rpc' nvmf_create_transport -t RDMA -q 128 -m 127 -c 131072 -u 131072 -n 4096 -b 32 -s '$SAME_SSD_MAX_SRQ_DEPTH'"
+  target "'$rpc' bdev_nvme_attach_controller -b Nvme0 -t PCIe -a '$TARGET_NVME_BDF'"
+  target "'$rpc' nvmf_create_subsystem '$NQN' -a -s MOONCAKE01 -d 'Mooncake NVMe-oF validation'"
+  target "'$rpc' nvmf_subsystem_add_ns '$NQN' Nvme0n1 -n '$NSID'"
+  target "'$rpc' nvmf_subsystem_add_listener '$NQN' -t RDMA -a '$TARGET_ADDR' -s '$TRSVCID' -f ipv4"
+}
+
+same_ssd_preflight() {
+  need ssh; need timeout; need python3
+  [[ -n ${TARGET_SSH:-} ]] || die "TARGET_SSH is required"
+  [[ -n ${TARGET_NVME_BDF:-} && -n ${TARGET_NVME_SERIAL:-} ]] ||
+    die "TARGET_NVME_BDF and TARGET_NVME_SERIAL are required"
+  local client_build_dir="${SAME_SSD_CLIENT_BUILD_DIR:-$BUILD_DIR}"
+  if [[ -n ${SAME_SSD_CLIENT_SSH:-} ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$SAME_SSD_CLIENT_SSH" \
+      "test -x '$client_build_dir/mooncake-store/benchmarks/nof_worker_pool_bench' && sudo -n true"
+  else
+    [[ -x "$client_build_dir/mooncake-store/benchmarks/nof_worker_pool_bench" ]] ||
+      die "NoF benchmark binary is missing"
+  fi
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$TARGET_SSH" true
+  target "sudo -n true"
+  target "test -d '/sys/bus/pci/devices/$TARGET_NVME_BDF'"
+  target "test -x '$SPDK_DIR/scripts/rpc.py'"
+  target "systemctl is-active --quiet '$SAME_SSD_SERVICE'"
+  verify_spdk_target_serial
+  same_ssd_verify_listener
+  if [[ -n ${SAME_SSD_CLIENT_SSH:-} ]]; then
+    ssh "$SAME_SSD_CLIENT_SSH" "rdma link show | grep -F '$CLIENT_RDMA_DEVICE' >/dev/null" ||
+      die "client RDMA device is unavailable: $CLIENT_RDMA_DEVICE"
+  else
+    rdma link show | grep -F "$CLIENT_RDMA_DEVICE" >/dev/null ||
+      die "client RDMA device is unavailable: $CLIENT_RDMA_DEVICE"
+  fi
+}
+
+run_same_ssd_characterization() {
+  same_ssd_preflight
+  local stamp out bdevperf config size depth run status service_stopped=0
+  local split_size_mb=$((TEST_BYTES / 1048576))
+  [[ $split_size_mb -gt 0 && $((split_size_mb * 1048576)) -eq TEST_BYTES ]] ||
+    die "TEST_BYTES must be a positive whole number of MiB"
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  out="${SAME_SSD_RESULT_DIR:-$RESULT_DIR/same-ssd-$stamp}"
+  bdevperf="$SPDK_DIR/build/examples/bdevperf"
+  mkdir -p "$out"/{raw/remote-before,raw/local,raw/remote-after,raw/capability,environment,smart}
+  python3 - "$out/matrix.json" <<EOF
+import json, sys
+json.dump({"sizes": "${SAME_SSD_SIZES}".split(), "depths": "${SAME_SSD_DEPTHS}".split(),
+           "repetitions": int("${SAME_SSD_REPETITIONS}"), "warmup_sec": int("${SAME_SSD_WARMUP}"),
+           "runtime_sec": int("${SAME_SSD_RUNTIME}"), "capability_probe_bytes": 67108864},
+          open(sys.argv[1], "w"), indent=2)
+EOF
+  if [[ -n ${SAME_SSD_CLIENT_SSH:-} ]]; then
+    ssh "$SAME_SSD_CLIENT_SSH" \
+      "git -C '${SAME_SSD_CLIENT_ROOT:-$MOONCAKE_ROOT}' rev-parse HEAD" \
+      >"$out/environment/mooncake-commit.txt"
+  else
+    git -C "$MOONCAKE_ROOT" rev-parse HEAD >"$out/environment/mooncake-commit.txt"
+  fi
+  target "cd '$SPDK_DIR' && git describe --always --dirty" >"$out/environment/spdk-version.txt"
+  target "systemctl status --no-pager '$SAME_SSD_SERVICE'" >"$out/environment/service-before.txt"
+  target "lspci -Dnn -s '$TARGET_NVME_BDF'" >"$out/environment/target-pci.txt"
+  capture_target_smart "$out/smart/before.json"
+  if ! target "test -x '$bdevperf'"; then
+    target "cd '$SPDK_DIR' && ninja -C build bdevperf" ||
+      target "cd '$SPDK_DIR' && make -j\$(nproc) build/examples/bdevperf"
+  fi
+  for size in $SAME_SSD_SIZES; do
+    for depth in $SAME_SSD_DEPTHS; do
+      for run in $(seq 1 "$SAME_SSD_REPETITIONS"); do
+        same_ssd_remote_run remote-before "$out" "$size" "$depth" "$run"
+      done
+    done
+  done
+  restore_same_ssd_service() {
+    local recovered=false
+    if [[ $service_stopped -eq 1 ]]; then
+      target "sudo -n pkill -TERM -f '$bdevperf.*$config' 2>/dev/null || true"
+      target "rm -f '$config'"
+      if same_ssd_start_target &&
+        target "systemctl is-active --quiet '$SAME_SSD_SERVICE'" &&
+        verify_spdk_target_serial && same_ssd_verify_listener && same_ssd_probe "$out"; then
+        recovered=true
+        capture_target_smart "$out/smart/after.json"
+        service_stopped=0
+      fi
+    fi
+    printf '{"success": %s}\n' "$recovered" >"$out/recovery.json"
+    [[ $recovered == true ]]
+  }
+  trap 'restore_same_ssd_service || true' EXIT
+  trap 'restore_same_ssd_service || true; trap - EXIT; exit 130' INT TERM
+  target "sudo -n systemctl stop '$SAME_SSD_SERVICE'"
+  service_stopped=1
+  target "! systemctl is-active --quiet '$SAME_SSD_SERVICE'"
+  config="/tmp/mooncake-same-ssd-$stamp.json"
+  target "printf '%s\n' '{\"subsystems\":[{\"subsystem\":\"bdev\",\"config\":[{\"method\":\"bdev_nvme_attach_controller\",\"params\":{\"name\":\"Nvme0\",\"trtype\":\"PCIe\",\"traddr\":\"$TARGET_NVME_BDF\"}},{\"method\":\"bdev_split_create\",\"params\":{\"base_bdev\":\"Nvme0n1\",\"split_count\":1,\"split_size_mb\":$split_size_mb}}]}]}' >'$config'"
+  for size in $SAME_SSD_SIZES; do
+    for depth in $SAME_SSD_DEPTHS; do
+      for run in $(seq 1 "$SAME_SSD_REPETITIONS"); do
+        name="local-size${size}-qd${depth}-run${run}"
+        set +e
+        target "'$bdevperf' -c '$config' -m '$SAME_SSD_TARGET_CPU_MASK' -T Nvme0n1p0 -q '$depth' -o '$size' -w read -t '$SAME_SSD_WARMUP' >/dev/null && '$bdevperf' -c '$config' -m '$SAME_SSD_TARGET_CPU_MASK' -T Nvme0n1p0 -q '$depth' -o '$size' -w read -t '$SAME_SSD_RUNTIME'" \
+          >"$out/raw/local/$name.log" 2>&1
+        status=$?
+        set -e
+        printf '%s\n' "$status" >"$out/raw/local/$name.exitcode"
+      done
+    done
+  done
+  target "rm -f '$config'"
+  restore_same_ssd_service || die "NVMe-oF target recovery or remote probe failed"
+  trap - EXIT INT TERM
+  for size in $SAME_SSD_SIZES; do
+    for depth in $SAME_SSD_DEPTHS; do
+      for run in $(seq 1 "$SAME_SSD_REPETITIONS"); do
+        same_ssd_remote_run remote-after "$out" "$size" "$depth" "$run"
+      done
+    done
+  done
+  same_ssd_remote_run capability "$out" 67108864 1 1
+  status=$(<"$out/raw/capability/capability-size67108864-qd1-run1.exitcode")
+  printf '{"size_bytes":67108864,"exit_code":%s,"required":false}\n' "$status" \
+    >"$out/capability-probe.json"
+  target "systemctl status --no-pager '$SAME_SSD_SERVICE'" >"$out/environment/service-after.txt"
+  python3 "$(dirname "$0")/same_ssd.py" summarize "$out"
+  log "same-SSD results: $out"
+}
+
 export TARGET_ADDR TARGET_NVME_SERIAL CLIENT_RDMA_DEVICE LOCAL_HOSTNAME
 export METADATA_URL MASTER_ADDR GLOBAL_SEGMENT_SIZE LOCAL_BUFFER_SIZE
 export NQN NSID TRSVCID TEST_BYTES
@@ -326,6 +533,12 @@ case ${1:-help} in
   stability) run_store_python "$(dirname "$0")/correctness.py" stability --seconds "${STABILITY_SECONDS:-60}" --output "$RESULT_DIR/stability.json" ;;
   nof-benchmark) run_nof_matrix ;;
   characterize) run_characterization ;;
+  same-ssd-preflight) same_ssd_preflight ;;
+  same-ssd-characterize) run_same_ssd_characterization ;;
+  same-ssd-summarize)
+    [[ -n ${SAME_SSD_RESULT_DIR:-} ]] || die "set SAME_SSD_RESULT_DIR to a same-SSD result directory"
+    python3 "$(dirname "$0")/same_ssd.py" summarize "$SAME_SSD_RESULT_DIR"
+    ;;
   characterize-summarize)
     python3 "$(dirname "$0")/characterize.py" summarize "$RESULT_DIR/characterization"
     python3 "$(dirname "$0")/characterize.py" plot "$RESULT_DIR/characterization/summary.csv" "$RESULT_DIR/characterization"

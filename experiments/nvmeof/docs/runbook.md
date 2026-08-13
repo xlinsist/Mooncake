@@ -203,7 +203,39 @@ errors. It does not claim multi-SSD aggregation; that remains marked untested
 until additional namespaces or targets are configured. Rebuild summaries and
 plots without rerunning hardware tests with `./run.sh characterize-summarize`.
 
-## 8. Cleanup
+## 8. Same-SSD path-overhead characterization
+
+This maintenance-window workflow compares Mooncake NoF with target-local SPDK
+`bdevperf` against the same physical SSD. Configure `TARGET_NVME_BDF`,
+`TARGET_NVME_SERIAL`, `SPDK_DIR`, and the optional `SAME_SSD_CLIENT_*` values
+when the benchmark runs on a separate client host. Then run:
+
+```bash
+./run.sh same-ssd-preflight
+./run.sh same-ssd-characterize
+```
+
+The harness runs remote-before, stops the target service once, measures local
+reads, recreates a transient service when necessary, validates the NQN,
+listener, namespace, and physical serial, runs a 4-KiB recovery probe, and then
+runs remote-after. The default required matrix is 4 KiB through 16 MiB at
+QD1/8/32, with three repetitions, a 2-second warmup, and a 15-second measured
+interval. Large requests use 128-KiB subcommands and an 8-MiB per-qpair inflight
+window to stay below the client request-pool boundary while preserving the
+object-level QD.
+
+`same-ssd-overhead.csv` reports remote latency overhead and remote/local
+bandwidth and IOPS ratios. A cell is inconclusive if a sample is missing or
+fails, remote-before/after latency drifts by more than 10%, service recovery
+fails, or SMART critical/media-error counters increase. The separate 64-MiB
+QD1 capability probe is informative and is not an acceptance gate. Rebuild the
+summary without rerunning hardware tests with:
+
+```bash
+SAME_SSD_RESULT_DIR=results/same-ssd-<timestamp> ./run.sh same-ssd-summarize
+```
+
+## 9. Cleanup
 
 ```bash
 ./run.sh unregister

@@ -29,7 +29,7 @@ case "$action" in
       target "'$rpc' rpc_get_methods >/dev/null 2>&1" && break
       sleep 1
     done
-    target "'$rpc' nvmf_create_transport -t RDMA -q 128 -m 127 -c 131072 -u 131072 -n 4096 -b 32"
+    target "'$rpc' nvmf_create_transport -t RDMA -q 128 -m 127 -c 131072 -u 131072 -n 4096 -b 32 -s '${SPDK_MAX_SRQ_DEPTH:-128}'"
     target "'$rpc' bdev_nvme_attach_controller -b Nvme0 -t PCIe -a '$TARGET_NVME_BDF'"
     target "'$rpc' nvmf_create_subsystem '$NQN' -a -s MOONCAKE01 -d 'Mooncake NVMe-oF validation'"
     target "'$rpc' nvmf_subsystem_add_ns '$NQN' Nvme0n1 -n '$NSID'"

@@ -288,8 +288,8 @@ if(MOONCAKE_ENABLE_OPLOG_PERF_METRICS)
 endif()
 target_include_directories(mooncake_store PUBLIC ${XXHASH_INCLUDE_DIR})
 if(USE_NOF)
-  target_include_directories(mooncake_store PRIVATE ${SPDK_INCLUDE_DIR}
-                                                    ${DPDK_INCLUDE_DIR})
+  target_include_directories(mooncake_store PUBLIC ${SPDK_INCLUDE_DIR}
+                                                   ${DPDK_INCLUDE_DIR})
 endif()
 target_link_libraries(mooncake_store PUBLIC ${XXHASH_LIBRARY})
 if(STORE_USE_REDIS)
