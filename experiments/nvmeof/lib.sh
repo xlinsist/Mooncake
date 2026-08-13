@@ -53,6 +53,18 @@ device_is_safe() {
   fi
 }
 
+device_is_read_safe() {
+  local device=$1
+  [[ -b "$device" ]] || die "block device does not exist: $device"
+  lsblk -nr -o TYPE "$device" | tail -n +2 | grep -Eq 'lvm|raid|crypt' &&
+    die "$device has LVM, RAID, or crypt holders"
+  swapon --noheadings --raw --output NAME 2>/dev/null | grep -q "^$device" &&
+    die "$device is used as swap"
+  if lsblk -nr -o MOUNTPOINT "$device" | grep -q '[^[:space:]]'; then
+    log "warning: $device is mounted; characterization is read-only but filesystem traffic may affect results"
+  fi
+}
+
 target_device_is_safe() {
   target "test -b '$TARGET_DEVICE'" || die "target device missing: $TARGET_DEVICE"
   target "lsblk -nr -o MOUNTPOINT '$TARGET_DEVICE' | grep -q '[^[:space:]]'" &&

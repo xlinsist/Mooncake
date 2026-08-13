@@ -85,7 +85,9 @@ def add_system_telemetry(metrics: dict[str, float], path: Path) -> None:
     metrics.update(defaults)
 
 
-def add_spdk_telemetry(metrics: dict[str, float], before_path: Path, after_path: Path) -> None:
+def add_spdk_telemetry(
+    metrics: dict[str, float], before_path: Path, after_path: Path
+) -> None:
     defaults = {
         "remote_device_Bps": 0.0,
         "remote_device_weighted_busy_pct": 0.0,
@@ -118,7 +120,23 @@ def add_spdk_telemetry(metrics: dict[str, float], before_path: Path, after_path:
 
 
 def median_metrics(items: list[dict[str, float]]) -> dict[str, float]:
-    return {key: statistics.median(item[key] for item in items) for key in items[0]}
+    metrics = {key: statistics.median(item[key] for item in items) for key in items[0]}
+    metrics["errors"] = sum(item["errors"] for item in items)
+    return metrics
+
+
+def expected_cases(result_dir: Path) -> set[tuple[str, int, int]]:
+    manifest_path = result_dir / "matrix.json"
+    if not manifest_path.exists():
+        return set()
+    manifest = json.loads(manifest_path.read_text())
+    sizes = [int(value) for value in manifest["sizes"]]
+    cases = set()
+    for backend, key in (("local", "local_loads"), ("remote", "remote_loads")):
+        for size in sizes:
+            for load in manifest[key]:
+                cases.add((backend, size, int(load)))
+    return cases
 
 
 def collect(result_dir: Path) -> tuple[list[dict], list[dict]]:
@@ -140,9 +158,17 @@ def collect(result_dir: Path) -> tuple[list[dict], list[dict]]:
                 else parse_nof(path, result_dir / "telemetry" / f"{path.stem}.time")
             )
         except (KeyError, ValueError, json.JSONDecodeError):
-            metrics = {key: 0.0 for key in (
-                "bandwidth_Bps", "iops", "p50_ms", "p95_ms", "p99_ms", "cpu_pct"
-            )}
+            metrics = {
+                key: 0.0
+                for key in (
+                    "bandwidth_Bps",
+                    "iops",
+                    "p50_ms",
+                    "p95_ms",
+                    "p99_ms",
+                    "cpu_pct",
+                )
+            }
             metrics["errors"] = 1.0
         if exit_code:
             metrics["errors"] = max(metrics["errors"], 1.0)
@@ -172,44 +198,60 @@ def collect(result_dir: Path) -> tuple[list[dict], list[dict]]:
 
     summary = []
     for (backend, size, load), items in sorted(grouped.items()):
-        summary.append({
-            "backend": backend,
-            "size_bytes": size,
-            "load_pct": load,
-            "runs": len(items),
-            **median_metrics(items),
-        })
+        summary.append(
+            {
+                "backend": backend,
+                "size_bytes": size,
+                "load_pct": load,
+                "runs": len(items),
+                **median_metrics(items),
+            }
+        )
     return raw_rows, summary
 
 
 def crossover_rows(summary: list[dict]) -> list[dict]:
-    index = {(row["backend"], row["size_bytes"], row["load_pct"]): row for row in summary}
+    index = {
+        (row["backend"], row["size_bytes"], row["load_pct"]): row for row in summary
+    }
     rows = []
     sizes = sorted({row["size_bytes"] for row in summary})
-    local_loads = sorted({row["load_pct"] for row in summary if row["backend"] == "local"})
-    remote_loads = sorted({row["load_pct"] for row in summary if row["backend"] == "remote"})
+    local_loads = sorted(
+        {row["load_pct"] for row in summary if row["backend"] == "local"}
+    )
+    remote_loads = sorted(
+        {row["load_pct"] for row in summary if row["backend"] == "remote"}
+    )
     for scenario, loads in (("local_load", local_loads), ("remote_load", remote_loads)):
         for size in sizes:
             for load in loads:
-                local = index.get(("local", size, load if scenario == "local_load" else 0))
-                remote = index.get(("remote", size, load if scenario == "remote_load" else 0))
+                local = index.get(
+                    ("local", size, load if scenario == "local_load" else 0)
+                )
+                remote = index.get(
+                    ("remote", size, load if scenario == "remote_load" else 0)
+                )
                 if not local or not remote:
                     continue
                 valid = local["errors"] == 0 and remote["errors"] == 0
                 winner = "invalid"
                 if valid:
                     winner = "remote" if remote["p95_ms"] < local["p95_ms"] else "local"
-                rows.append({
-                    "scenario": scenario,
-                    "size_bytes": size,
-                    "load_pct": load,
-                    "local_p95_ms": local["p95_ms"],
-                    "remote_p95_ms": remote["p95_ms"],
-                    "remote_over_local_p95": (
-                        remote["p95_ms"] / local["p95_ms"] if local["p95_ms"] else math.inf
-                    ),
-                    "winner": winner,
-                })
+                rows.append(
+                    {
+                        "scenario": scenario,
+                        "size_bytes": size,
+                        "load_pct": load,
+                        "local_p95_ms": local["p95_ms"],
+                        "remote_p95_ms": remote["p95_ms"],
+                        "remote_over_local_p95": (
+                            remote["p95_ms"] / local["p95_ms"]
+                            if local["p95_ms"]
+                            else math.inf
+                        ),
+                        "winner": winner,
+                    }
+                )
     return rows
 
 
@@ -229,13 +271,22 @@ def summarize(result_dir: Path) -> None:
     write_csv(result_dir / "summary.csv", summary)
     write_csv(result_dir / "crossover.csv", crossover)
     go_regions = [
-        row for row in crossover
-        if row["scenario"] == "local_load" and row["load_pct"] > 0 and row["winner"] == "remote"
+        row
+        for row in crossover
+        if row["scenario"] == "local_load"
+        and row["load_pct"] > 0
+        and row["winner"] == "remote"
     ]
-    complete_matrix = bool(summary) and all(
-        row["runs"] >= 3 and row["errors"] == 0 for row in summary
+    expected = expected_cases(result_dir)
+    observed = {(row["backend"], row["size_bytes"], row["load_pct"]) for row in summary}
+    complete_matrix = (
+        bool(expected)
+        and expected == observed
+        and all(row["runs"] >= 3 and row["errors"] == 0 for row in summary)
     )
-    decision = "go" if go_regions else ("no-go" if complete_matrix else "inconclusive")
+    decision = (
+        "inconclusive" if not complete_matrix else ("go" if go_regions else "no-go")
+    )
     conclusion = {
         "decision": decision,
         "criterion": "remote p95 is lower than local p95 under nonzero local load",
@@ -263,27 +314,41 @@ def plot(summary_path: Path, output_dir: Path) -> None:
     sizes = sorted({int(row["size_bytes"]) for row in base})
     max_bw = max((float(row["bandwidth_Bps"]) for row in base), default=1)
     colors = {"local": "#2166ac", "remote": "#b2182b"}
-    elements = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
-                '<rect width="100%" height="100%" fill="white"/>',
-                f'<text x="{width/2}" y="28" text-anchor="middle" font-size="18">Local vs Remote bandwidth (load 0%)</text>']
-    elements += [f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#333"/>',
-                 f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#333"/>']
+    elements = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text x="{width/2}" y="28" text-anchor="middle" font-size="18">Local vs Remote bandwidth (load 0%)</text>',
+    ]
+    elements += [
+        f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#333"/>',
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#333"/>',
+    ]
     for backend in ("local", "remote"):
         points = []
-        lookup = {int(row["size_bytes"]): float(row["bandwidth_Bps"]) for row in base if row["backend"] == backend}
+        lookup = {
+            int(row["size_bytes"]): float(row["bandwidth_Bps"])
+            for row in base
+            if row["backend"] == backend
+        }
         for idx, size in enumerate(sizes):
             if size not in lookup:
                 continue
             x = margin + idx * (width - 2 * margin) / max(1, len(sizes) - 1)
             y = height - margin - lookup[size] / max_bw * (height - 2 * margin)
             points.append(f"{x:.1f},{y:.1f}")
-        elements.append(f'<polyline points="{" ".join(points)}" fill="none" stroke="{colors[backend]}" stroke-width="3"/>')
-        elements.append(f'<text x="{width-margin-90}" y="{48 if backend == "local" else 68}" fill="{colors[backend]}">{backend}</text>')
+        elements.append(
+            f'<polyline points="{" ".join(points)}" fill="none" stroke="{colors[backend]}" stroke-width="3"/>'
+        )
+        elements.append(
+            f'<text x="{width-margin-90}" y="{48 if backend == "local" else 68}" fill="{colors[backend]}">{backend}</text>'
+        )
     for idx, size in enumerate(sizes):
         x = margin + idx * (width - 2 * margin) / max(1, len(sizes) - 1)
         label = f"{size // 1024}K" if size < 1024**2 else f"{size // 1024**2}M"
-        elements.append(f'<text x="{x:.1f}" y="{height-margin+22}" text-anchor="middle" font-size="10">{svg_escape(label)}</text>')
-    elements.append('</svg>')
+        elements.append(
+            f'<text x="{x:.1f}" y="{height-margin+22}" text-anchor="middle" font-size="10">{svg_escape(label)}</text>'
+        )
+    elements.append("</svg>")
     (output_dir / "size-bandwidth.svg").write_text("\n".join(elements) + "\n")
 
     crossover = load_csv(output_dir / "crossover.csv")
@@ -292,14 +357,20 @@ def plot(summary_path: Path, output_dir: Path) -> None:
     cell_w = 80
     heat_width = 150 + cell_w * len(sizes)
     heat_height = 100 + 45 * len(loads)
-    heat = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{heat_width}" height="{heat_height}">',
-            '<rect width="100%" height="100%" fill="white"/>',
-            '<text x="20" y="25" font-size="18">Crossover: local load vs idle remote (p95)</text>']
-    lookup = {(int(r["size_bytes"]), int(r["load_pct"])): r["winner"] for r in local_rows}
+    heat = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{heat_width}" height="{heat_height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        '<text x="20" y="25" font-size="18">Crossover: local load vs idle remote (p95)</text>',
+    ]
+    lookup = {
+        (int(r["size_bytes"]), int(r["load_pct"])): r["winner"] for r in local_rows
+    }
     for col, size in enumerate(sizes):
         x = 120 + col * cell_w
         label = f"{size // 1024}K" if size < 1024**2 else f"{size // 1024**2}M"
-        heat.append(f'<text x="{x+cell_w/2}" y="52" text-anchor="middle" font-size="10">{label}</text>')
+        heat.append(
+            f'<text x="{x+cell_w/2}" y="52" text-anchor="middle" font-size="10">{label}</text>'
+        )
     fills = {"remote": "#67a9cf", "local": "#ef8a62", "invalid": "#cccccc"}
     for row_index, load in enumerate(loads):
         y = 62 + row_index * 45
@@ -307,9 +378,13 @@ def plot(summary_path: Path, output_dir: Path) -> None:
         for col, size in enumerate(sizes):
             winner = lookup.get((size, load), "invalid")
             x = 120 + col * cell_w
-            heat.append(f'<rect x="{x}" y="{y}" width="{cell_w-2}" height="40" fill="{fills[winner]}"/>')
-            heat.append(f'<text x="{x+(cell_w-2)/2}" y="{y+25}" text-anchor="middle" font-size="11">{winner}</text>')
-    heat.append('</svg>')
+            heat.append(
+                f'<rect x="{x}" y="{y}" width="{cell_w-2}" height="40" fill="{fills[winner]}"/>'
+            )
+            heat.append(
+                f'<text x="{x+(cell_w-2)/2}" y="{y+25}" text-anchor="middle" font-size="11">{winner}</text>'
+            )
+    heat.append("</svg>")
     (output_dir / "crossover.svg").write_text("\n".join(heat) + "\n")
 
 

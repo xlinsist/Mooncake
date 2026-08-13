@@ -137,10 +137,18 @@ run_characterization() {
   actual_serial=$(sudo -n nvme id-ctrl "$LOCAL_NVME_DEVICE" | awk -F: '/^sn[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}')
   [[ $actual_serial == "$LOCAL_NVME_SERIAL" ]] ||
     die "local NVMe serial mismatch: expected $LOCAL_NVME_SERIAL, got $actual_serial"
-  device_is_safe "$LOCAL_NVME_DEVICE"
+  device_is_read_safe "$LOCAL_NVME_DEVICE"
 
   local out="$RESULT_DIR/characterization"
   mkdir -p "$out/raw/local" "$out/raw/remote" "$out/raw/load" "$out/telemetry"
+  python3 - "$out/matrix.json" <<EOF
+import json, sys
+json.dump({
+    "sizes": "${CHAR_SIZES:-4096 65536 262144 1048576 4194304 16777216 67108864 268435456 1073741824}".split(),
+    "local_loads": "${CHAR_LOADS:-0 25 50 75 90}".split(),
+    "remote_loads": "${CHAR_REMOTE_LOADS:-0 25 50 75 90}".split(),
+}, open(sys.argv[1], "w"), indent=2)
+EOF
   local calibration="$out/raw/load/local-calibration.json"
   sudo -n fio --name=local-calibration --filename="$LOCAL_NVME_DEVICE" \
     --rw=randread --bs=4096 --iodepth="${CHAR_IODEPTH:-32}" --ioengine=libaio \
@@ -174,6 +182,8 @@ run_characterization() {
         --output-format=json+ --output="$out/raw/load/local-load-$load.json" &
       load_pid=$!
       sleep 2
+      sudo -n kill -0 "$load_pid" 2>/dev/null ||
+        die "local background load failed to start: $out/raw/load/local-load-$load.json"
     fi
     for size in ${CHAR_SIZES:-4096 65536 262144 1048576 4194304 16777216 67108864 268435456 1073741824}; do
       depth=$((1073741824 / size))
@@ -198,7 +208,8 @@ run_characterization() {
   done
 
   timeout_sec=$((BENCH_RUNTIME + BENCH_WARMUP + BENCH_IO_TIMEOUT + BENCH_KILL_GRACE + 5))
-  local remote_load_depth
+  local remote_load_depth remote_load_bs
+  remote_load_bs=${CHAR_REMOTE_LOAD_BS:-4096}
   for load in ${CHAR_REMOTE_LOADS:-0 25 50 75 90}; do
     remote_load_pid=""
     if [[ $load -gt 0 ]]; then
@@ -206,12 +217,14 @@ run_characterization() {
       [[ $remote_load_depth -gt 0 ]] || remote_load_depth=1
       timeout --signal=TERM --kill-after="${BENCH_KILL_GRACE:-5}s" \
         86400s sudo -n "$bench" --endpoints="$endpoint" \
-        --rw=randread --bs=4096 --iodepth="$remote_load_depth" \
+        --rw=randread --bs="$remote_load_bs" --iodepth="$remote_load_depth" \
         --runtime=86400 --ramp_time=0 --size="$TEST_BYTES" \
         --io_timeout_sec="${BENCH_IO_TIMEOUT:-30}" \
         >"$out/raw/load/remote-load-$load.log" 2>&1 &
       remote_load_pid=$!
       sleep 2
+      sudo -n kill -0 "$remote_load_pid" 2>/dev/null ||
+        die "remote background load failed to start: $out/raw/load/remote-load-$load.log"
     fi
     for size in ${CHAR_SIZES:-4096 65536 262144 1048576 4194304 16777216 67108864 268435456 1073741824}; do
       depth=$((1073741824 / size))
