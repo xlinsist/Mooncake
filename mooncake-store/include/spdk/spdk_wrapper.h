@@ -96,6 +96,7 @@ class SpdkWrapper {
     static void ProbeReadComplete(void *ctx, const struct spdk_nvme_cpl *cpl);
 
     std::atomic<bool> initialized{false};
+    std::atomic<bool> owns_environment_{false};
     std::mutex init_mutex;
     std::map<std::string, std::unique_ptr<ctrlr_info>> connected_ctrlrs;
     std::mutex ctrlrs_mutex;

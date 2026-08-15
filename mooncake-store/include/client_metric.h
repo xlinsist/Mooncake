@@ -619,7 +619,8 @@ struct SsdMetric {
         }
         ss << "\n";
 
-        ss << "\n" << "=== SSD Latency Summary (microseconds) ===" << "\n";
+        ss << "\n"
+           << "=== SSD Latency Summary (microseconds) ===" << "\n";
         ss << "Read: " << format_summary_percentiles(ssd_read_latency_summary)
            << "\n";
         ss << "Write: " << format_summary_percentiles(ssd_write_latency_summary)
@@ -653,11 +654,77 @@ struct SsdMetric {
     }
 };
 
+struct HeterogeneousStorageMetric {
+    explicit HeterogeneousStorageMetric(
+        std::map<std::string, std::string> labels = {})
+        : storage_put_total("storage_put_total", "Storage put operations",
+                            labels, {"target", "result"}),
+          storage_get_total("storage_get_total", "Storage get operations",
+                            labels, {"target", "result"}),
+          storage_remove_total("storage_remove_total",
+                               "Storage remove operations", labels,
+                               {"target", "result"}),
+          storage_operation_latency_us(
+              "storage_operation_latency_us", "Storage operation latency",
+              kSsdLatencyBucket, labels, {"operation", "target"}),
+          storage_bytes_total("storage_bytes_total", "Storage bytes", labels,
+                              {"operation", "target"}),
+          storage_revoke_total("storage_revoke_total", "Storage revocations",
+                               labels, {"target", "reason"}),
+          storage_orphan_cleanup_total("storage_orphan_cleanup_total",
+                                       "Storage orphan cleanups", labels,
+                                       {"target", "result"}) {}
+
+    ylt::metric::hybrid_counter_2t storage_put_total;
+    ylt::metric::hybrid_counter_2t storage_get_total;
+    ylt::metric::hybrid_counter_2t storage_remove_total;
+    ylt::metric::hybrid_histogram_2t storage_operation_latency_us;
+    ylt::metric::hybrid_counter_2t storage_bytes_total;
+    ylt::metric::hybrid_counter_2t storage_revoke_total;
+    ylt::metric::hybrid_counter_2t storage_orphan_cleanup_total;
+
+    void ObserveOperation(const std::string& operation,
+                          const std::string& target, bool success,
+                          uint64_t bytes, uint64_t latency_us) {
+        const std::array<std::string, 2> result_labels = {
+            target, success ? "success" : "failure"};
+        if (operation == "put") {
+            storage_put_total.inc(result_labels);
+        } else if (operation == "get") {
+            storage_get_total.inc(result_labels);
+        } else if (operation == "remove") {
+            storage_remove_total.inc(result_labels);
+        }
+        storage_operation_latency_us.observe({operation, target}, latency_us);
+        storage_bytes_total.inc({operation, target}, bytes);
+    }
+
+    void ObserveRevoke(const std::string& target, const std::string& reason) {
+        storage_revoke_total.inc({target, reason});
+    }
+
+    void ObserveOrphanCleanup(const std::string& target, bool success) {
+        storage_orphan_cleanup_total.inc(
+            {target, success ? "success" : "failure"});
+    }
+
+    void serialize(std::string& str) {
+        storage_put_total.serialize(str);
+        storage_get_total.serialize(str);
+        storage_remove_total.serialize(str);
+        storage_operation_latency_us.serialize(str);
+        storage_bytes_total.serialize(str);
+        storage_revoke_total.serialize(str);
+        storage_orphan_cleanup_total.serialize(str);
+    }
+};
+
 struct ClientMetric {
     TransferMetric transfer_metric;
     MasterClientMetric master_client_metric;
     TransferOperationMetric transfer_operation_metric;
     SsdMetric ssd_metric;
+    HeterogeneousStorageMetric heterogeneous_storage_metric;
 
     /**
      * @brief Creates a ClientMetric instance based on environment variables
@@ -678,6 +745,13 @@ struct ClientMetric {
                                   const std::string& op_name, uint64_t bytes,
                                   uint64_t latency_us) {
         transfer_operation_metric.Observe(kind, op_name, bytes, latency_us);
+    }
+
+    void ObserveStorageOperation(const std::string& operation,
+                                 const std::string& target, bool success,
+                                 uint64_t bytes, uint64_t latency_us) {
+        heterogeneous_storage_metric.ObserveOperation(
+            operation, target, success, bytes, latency_us);
     }
 
     void serialize(std::string& str);

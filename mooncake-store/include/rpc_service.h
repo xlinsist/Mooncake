@@ -79,11 +79,15 @@ class WrappedMasterService {
         const UUID& client_id, const std::string& key,
         const uint64_t slice_length, const ReplicateConfig& config,
         const std::string& tenant_id = "default");
+    tl::expected<std::vector<Replica::Descriptor>, ErrorCode> PutStartManaged(
+        const ManagedPlacementStartRequest& request);
 
     tl::expected<void, ErrorCode> PutEnd(
         const UUID& client_id, const ObjectMeta& object_meta,
         ReplicaType replica_type = ReplicaType::ALL,
         const std::string& tenant_id = "default");
+    tl::expected<void, ErrorCode> PutEndPlacement(
+        const PlacementEndRequest& request);
 
     tl::expected<void, ErrorCode> PutRevoke(
         const UUID& client_id, const std::string& key,
@@ -95,11 +99,15 @@ class WrappedMasterService {
                   const std::vector<uint64_t>& slice_lengths,
                   const ReplicateConfig& config,
                   const std::string& tenant_id = "default");
+    std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
+    BatchPutStartManaged(const ManagedPlacementBatchStartRequest& request);
 
     std::vector<tl::expected<void, ErrorCode>> BatchPutEnd(
         const UUID& client_id, const std::vector<ObjectMeta>& object_metas,
         ReplicaType replica_type = ReplicaType::ALL,
         const std::string& tenant_id = "default");
+    std::vector<tl::expected<void, ErrorCode>> BatchPutEndPlacement(
+        const PlacementBatchEndRequest& request);
 
     std::vector<tl::expected<void, ErrorCode>> BatchPutRevoke(
         const UUID& client_id, const std::vector<std::string>& keys,
@@ -110,11 +118,15 @@ class WrappedMasterService {
         const UUID& client_id, const std::string& key,
         const uint64_t slice_length, const ReplicateConfig& config,
         const std::string& tenant_id = "default");
+    tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
+    UpsertStartManaged(const ManagedPlacementStartRequest& request);
 
     tl::expected<void, ErrorCode> UpsertEnd(
         const UUID& client_id, const ObjectMeta& object_meta,
         ReplicaType replica_type = ReplicaType::ALL,
         const std::string& tenant_id = "default");
+    tl::expected<void, ErrorCode> UpsertEndPlacement(
+        const PlacementEndRequest& request);
 
     tl::expected<void, ErrorCode> UpsertRevoke(
         const UUID& client_id, const std::string& key,
@@ -127,10 +139,14 @@ class WrappedMasterService {
                      const std::vector<uint64_t>& slice_lengths,
                      const ReplicateConfig& config,
                      const std::string& tenant_id = "default");
+    std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
+    BatchUpsertStartManaged(const ManagedPlacementBatchStartRequest& request);
 
     std::vector<tl::expected<void, ErrorCode>> BatchUpsertEnd(
         const UUID& client_id, const std::vector<ObjectMeta>& object_metas,
         const std::string& tenant_id = "default");
+    std::vector<tl::expected<void, ErrorCode>> BatchUpsertEndPlacement(
+        const PlacementBatchEndRequest& request);
 
     std::vector<tl::expected<void, ErrorCode>> BatchUpsertRevoke(
         const UUID& client_id, const std::vector<std::string>& keys,
@@ -149,6 +165,13 @@ class WrappedMasterService {
 
     std::vector<tl::expected<void, ErrorCode>> BatchRemove(
         const std::vector<std::string>& keys, bool force = false,
+        const std::string& tenant_id = "default");
+
+    tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>
+    PollLocalDiskRemovals(const UUID& client_id);
+
+    tl::expected<void, ErrorCode> AckLocalDiskRemoval(
+        const UUID& client_id, const std::string& key, bool success,
         const std::string& tenant_id = "default");
 
     tl::expected<void, ErrorCode> MountSegment(const Segment& segment,
@@ -209,6 +232,10 @@ class WrappedMasterService {
 
     tl::expected<void, ErrorCode> MountLocalDiskSegment(const UUID& client_id,
                                                         bool enable_offloading);
+
+    tl::expected<long, ErrorCode> RebindLocalDiskBackend(
+        const UUID& client_id, const std::string& backend_id,
+        const std::string& transport_endpoint);
 
     tl::expected<std::vector<OffloadTaskItem>, ErrorCode>
     OffloadObjectHeartbeat(const UUID& client_id, bool enable_offloading);

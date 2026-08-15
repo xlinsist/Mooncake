@@ -1,5 +1,7 @@
 #include "client_service.h"
 
+#include "memory_alloc.h"
+
 #include <boost/algorithm/string.hpp>
 #include <glog/logging.h>
 
@@ -41,14 +43,35 @@
 #include "utils.h"
 #include "rpc_types.h"
 #include "local_hot_cache.h"
+#include "placement_policy.h"
 #include "device/accelerator_registry.h"
 #ifdef USE_INTRA_NVLINK
 #include "gpu_vendor/intra_nvlink.h"
 #endif
 #include "crc_checksum.h"
+#include "crc32c.h"
 #include "environ.h"
 
 namespace mooncake {
+
+namespace detail {
+bool HasCommittedLocalReplica(const std::vector<Replica::Descriptor>& replicas,
+                              const LocalObjectLocator& local_object) {
+    for (const auto& replica : replicas) {
+        if (!replica.is_local_disk_replica() ||
+            replica.status != ReplicaStatus::COMPLETE) {
+            continue;
+        }
+        const auto& local = replica.get_local_disk_descriptor();
+        if (local.backend_id.value_or("") == local_object.backend_id &&
+            local.locator.value_or("") == local_object.locator &&
+            local.generation.value_or(0) == local_object.generation) {
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace detail
 
 namespace {
 
@@ -217,10 +240,13 @@ class ScatterRangeBuilder {
 struct ReplicaTransferSummary {
     size_t allocated_memory_replicas = 0;
     size_t allocated_nof_replicas = 0;
+    size_t allocated_local_replicas = 0;
     size_t successful_memory_transfers = 0;
     size_t successful_nof_transfers = 0;
+    size_t successful_local_transfers = 0;
     size_t failed_memory_transfers = 0;
     size_t failed_nof_transfers = 0;
+    size_t failed_local_transfers = 0;
     ErrorCode first_error = ErrorCode::OK;
 
     void RecordAllocatedReplica(const Replica::Descriptor& replica) {
@@ -228,6 +254,8 @@ struct ReplicaTransferSummary {
             ++allocated_memory_replicas;
         } else if (replica.is_nof_replica()) {
             ++allocated_nof_replicas;
+        } else if (replica.is_local_disk_replica()) {
+            ++allocated_local_replicas;
         }
     }
 
@@ -236,6 +264,8 @@ struct ReplicaTransferSummary {
             ++successful_memory_transfers;
         } else if (replica_type == ReplicaType::NOF_SSD) {
             ++successful_nof_transfers;
+        } else if (replica_type == ReplicaType::LOCAL_DISK) {
+            ++successful_local_transfers;
         }
     }
 
@@ -244,6 +274,8 @@ struct ReplicaTransferSummary {
             ++failed_memory_transfers;
         } else if (replica_type == ReplicaType::NOF_SSD) {
             ++failed_nof_transfers;
+        } else if (replica_type == ReplicaType::LOCAL_DISK) {
+            ++failed_local_transfers;
         }
         if (first_error == ErrorCode::OK) {
             first_error = error;
@@ -253,6 +285,19 @@ struct ReplicaTransferSummary {
 
 bool HasExpectedReplicaAllocation(const ReplicateConfig& config,
                                   const ReplicaTransferSummary& summary) {
+    if (config.placement_control.value_or(PlacementControl::MANUAL) ==
+        PlacementControl::MANAGED) {
+        return summary.allocated_local_replicas +
+                   summary.allocated_memory_replicas +
+                   summary.allocated_nof_replicas ==
+               1;
+    }
+    if (config.local_replica_num.value_or(0) > 0 ||
+        summary.allocated_local_replicas > 0) {
+        return summary.allocated_local_replicas == 1 &&
+               summary.allocated_memory_replicas == 0 &&
+               summary.allocated_nof_replicas == 0;
+    }
     if (config.nof_replica_num == 0) {
         return summary.allocated_memory_replicas > 0;
     }
@@ -283,14 +328,33 @@ FinalizeDecision DetermineFinalizeDecision(
     const bool allocation_satisfied =
         HasExpectedReplicaAllocation(config, summary);
 
+    if (summary.allocated_local_replicas > 0) {
+        if (allocation_satisfied && summary.successful_local_transfers == 1 &&
+            summary.failed_local_transfers == 0) {
+            return {.end_type = ReplicaType::LOCAL_DISK,
+                    .revoke_type = std::nullopt,
+                    .success = true,
+                    .error = ErrorCode::OK};
+        }
+        return {.end_type = std::nullopt,
+                .revoke_type = ReplicaType::LOCAL_DISK,
+                .success = false,
+                .error = summary.first_error == ErrorCode::OK
+                             ? ErrorCode::TRANSFER_FAIL
+                             : summary.first_error};
+    }
+
     if (write_mode != ReplicaWriteMode::FLEXIBLE_DUAL_REPLICA) {
         const bool all_transfers_succeeded =
             summary.successful_memory_transfers ==
                 summary.allocated_memory_replicas &&
             summary.successful_nof_transfers ==
                 summary.allocated_nof_replicas &&
+            summary.successful_local_transfers ==
+                summary.allocated_local_replicas &&
             summary.failed_memory_transfers == 0 &&
-            summary.failed_nof_transfers == 0;
+            summary.failed_nof_transfers == 0 &&
+            summary.failed_local_transfers == 0;
         if (allocation_satisfied && all_transfers_succeeded) {
             return {.end_type = ReplicaType::ALL,
                     .revoke_type = std::nullopt,
@@ -335,6 +399,21 @@ FinalizeDecision DetermineFinalizeDecision(
             .error = summary.first_error == ErrorCode::OK
                          ? ErrorCode::NO_AVAILABLE_HANDLE
                          : summary.first_error};
+}
+
+std::string_view StorageTargetLabel(ReplicaType replica_type) {
+    switch (replica_type) {
+        case ReplicaType::LOCAL_DISK:
+            return "local_nvme";
+        case ReplicaType::NOF_SSD:
+            return "remote_nof";
+        case ReplicaType::MEMORY:
+            return "memory";
+        case ReplicaType::ALL:
+            return "all";
+        default:
+            return "unknown";
+    }
 }
 
 }  // namespace
@@ -490,6 +569,118 @@ ReplicateConfig Client::AttachHostId(const ReplicateConfig& config) const {
         client_cfg.host_id = host_id_;
     }
     return client_cfg;
+}
+
+void Client::ConfigureDirectLocalStorage(
+    std::string transport_endpoint,
+    std::function<tl::expected<StagedLocalObject, ErrorCode>(
+        const std::string&, const std::vector<Slice>&)>
+        stage,
+    std::function<
+        tl::expected<LocalObjectLocator, ErrorCode>(const StagedLocalObject&)>
+        commit,
+    std::function<tl::expected<void, ErrorCode>(const StagedLocalObject&)>
+        abort,
+    std::function<tl::expected<void, ErrorCode>(const LocalObjectLocator&)>
+        remove) {
+    direct_local_transport_endpoint_ = std::move(transport_endpoint);
+    direct_local_stage_ = std::move(stage);
+    direct_local_commit_ = std::move(commit);
+    direct_local_abort_ = std::move(abort);
+    direct_local_remove_ = std::move(remove);
+}
+
+tl::expected<LocalObjectLocator, ErrorCode> Client::WriteDirectLocalObject(
+    const std::string& key, const std::vector<Slice>& slices) {
+    const auto started = std::chrono::steady_clock::now();
+    const auto bytes = CalculateSliceSize(slices);
+    const auto observe = [this, started, bytes](bool success) {
+        if (metrics_) {
+            metrics_->ObserveStorageOperation("put", "local_nvme", success,
+                                              bytes, elapsed_us_since(started));
+        }
+    };
+    if (!direct_local_stage_ || !direct_local_commit_) {
+        LOG(ERROR) << "action=heterogeneous_storage_write"
+                   << ", key_id=" << SafeObjectKeyId(key)
+                   << ", object_size=" << bytes << ", target=local_nvme"
+                   << ", replica_type=LOCAL_DISK"
+                   << ", stage=backend_unavailable";
+        observe(false);
+        return tl::make_unexpected(ErrorCode::NO_AVAILABLE_HANDLE);
+    }
+    auto staged = direct_local_stage_(key, slices);
+    if (!staged) {
+        LOG(ERROR) << "action=heterogeneous_storage_write"
+                   << ", key_id=" << SafeObjectKeyId(key)
+                   << ", object_size=" << bytes << ", target=local_nvme"
+                   << ", replica_type=LOCAL_DISK" << ", stage=stage"
+                   << ", error=" << toString(staged.error());
+        observe(false);
+        return tl::make_unexpected(staged.error());
+    }
+    auto committed = direct_local_commit_(*staged);
+    if (!committed) {
+        if (direct_local_abort_) {
+            (void)direct_local_abort_(*staged);
+        }
+        LOG(ERROR) << "action=heterogeneous_storage_write"
+                   << ", key_id=" << SafeObjectKeyId(key)
+                   << ", object_size=" << bytes << ", target=local_nvme"
+                   << ", replica_type=LOCAL_DISK" << ", stage=commit"
+                   << ", error=" << toString(committed.error());
+        observe(false);
+        return tl::make_unexpected(committed.error());
+    }
+    observe(true);
+    return committed;
+}
+
+void Client::CleanupDirectLocalObject(const LocalObjectLocator& locator) {
+    if (!direct_local_remove_) {
+        return;
+    }
+    auto result = direct_local_remove_(locator);
+    if (metrics_) {
+        metrics_->heterogeneous_storage_metric.ObserveOrphanCleanup(
+            "local_nvme", result.has_value());
+    }
+    if (!result) {
+        LOG(ERROR) << "action=heterogeneous_storage_cleanup"
+                   << ", object_size=" << locator.object_size
+                   << ", target=local_nvme" << ", replica_type=LOCAL_DISK"
+                   << ", stage=orphan_cleanup"
+                   << ", error=" << toString(result.error());
+    }
+}
+
+ObjectMeta Client::BuildObjectMeta(
+    const std::string& key, std::optional<uint64_t> object_checksum,
+    const std::optional<LocalObjectLocator>& local_object) const {
+    ObjectMeta metadata;
+    metadata.key = key;
+    metadata.object_checksum = object_checksum;
+    if (local_object.has_value()) {
+        metadata.local_disk_transport_endpoint =
+            direct_local_transport_endpoint_;
+        metadata.local_disk_backend_id = local_object->backend_id;
+        metadata.local_disk_locator = local_object->locator;
+        metadata.local_disk_generation = local_object->generation;
+    }
+    return metadata;
+}
+
+tl::expected<bool, ErrorCode> Client::ReconcileLocalFinalize(
+    const std::string& key, const LocalObjectLocator& local_object) {
+    auto replica_list = master_client_.GetReplicaList(key);
+    if (!replica_list) {
+        if (replica_list.error() == ErrorCode::OBJECT_NOT_FOUND) {
+            return false;
+        }
+        return tl::make_unexpected(replica_list.error());
+    }
+    return detail::HasCommittedLocalReplica(replica_list->replicas,
+                                            local_object);
 }
 
 static std::optional<bool> get_auto_discover() {
@@ -1306,15 +1497,14 @@ tl::expected<std::vector<std::string>, ErrorCode> Client::BatchReplicaClear(
 tl::expected<void, ErrorCode> Client::Get(const std::string& object_key,
                                           const QueryResult& query_result,
                                           std::vector<Slice>& slices) {
-    // Find the first complete replica
-    Replica::Descriptor replica;
-    ErrorCode err = FindFirstCompleteReplica(query_result.replicas, replica);
-    if (err != ErrorCode::OK) {
-        if (err == ErrorCode::INVALID_REPLICA) {
+    auto selected_replica = GetPreferredReplica(query_result.replicas);
+    if (!selected_replica) {
+        if (selected_replica.error() == ErrorCode::INVALID_REPLICA) {
             LOG(ERROR) << "no_complete_replicas_found key=" << object_key;
         }
-        return tl::unexpected(err);
+        return tl::unexpected(selected_replica.error());
     }
+    Replica::Descriptor replica = std::move(*selected_replica);
 
     // Check local hot cache and update replica descriptor if cache hit
     bool cache_used = false;
@@ -1323,7 +1513,7 @@ tl::expected<void, ErrorCode> Client::Get(const std::string& object_key,
     }
 
     auto t0_get = std::chrono::steady_clock::now();
-    err = TransferRead(replica, slices);
+    ErrorCode err = TransferRead(replica, slices);
 
     // Release the cache block after transfer completes (memcpy is done)
     if (hot_cache_ && cache_used) {
@@ -1374,22 +1564,18 @@ tl::expected<void, ErrorCode> Client::Get(const std::string& object_key,
                                           const QueryResult& query_result,
                                           std::vector<Slice>& slices,
                                           uint64_t src_offset) {
-    Replica::Descriptor replica;
-    ErrorCode err = FindFirstCompleteReplica(query_result.replicas, replica);
-    if (err != ErrorCode::OK) {
-        if (err == ErrorCode::INVALID_REPLICA) {
+    auto selected_replica = GetPreferredReplica(
+        query_result.replicas, ReadSourceRequirement::SCATTER_RANGE);
+    if (!selected_replica) {
+        if (selected_replica.error() == ErrorCode::INVALID_REPLICA) {
             LOG(ERROR) << "no_complete_replicas_found key=" << object_key;
         }
-        return tl::unexpected(err);
+        return tl::unexpected(selected_replica.error());
     }
-    if (!replica.is_memory_replica()) {
-        LOG(ERROR) << "Range read only supported for memory replicas, key="
-                   << object_key;
-        return tl::unexpected(ErrorCode::INVALID_REPLICA);
-    }
+    Replica::Descriptor replica = std::move(*selected_replica);
 
     auto t0_get = std::chrono::steady_clock::now();
-    err = TransferReadRange(replica, slices, src_offset);
+    ErrorCode err = TransferReadRange(replica, slices, src_offset);
     auto us_get = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - t0_get)
                       .count();
@@ -1443,19 +1629,16 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGetWhenPreferSameNode(
             results[i] = tl::unexpected(ErrorCode::INVALID_PARAMS);
             continue;
         }
-        Replica::Descriptor replica;
-        ErrorCode err = FindFirstCompleteReplica(replica_list, replica);
-        if (err != ErrorCode::OK) {
-            if (err == ErrorCode::INVALID_REPLICA) {
+        auto selected_replica = GetPreferredReplica(
+            replica_list, ReadSourceRequirement::MEMORY_ONLY);
+        if (!selected_replica) {
+            if (selected_replica.error() == ErrorCode::INVALID_REPLICA) {
                 LOG(ERROR) << "no_complete_replicas_found key=" << key;
             }
-            results[i] = tl::unexpected(err);
+            results[i] = tl::unexpected(selected_replica.error());
             continue;
         }
-        if (!replica.is_memory_replica()) {
-            results[i] = tl::unexpected(ErrorCode::INVALID_REPLICA);
-            continue;
-        }
+        Replica::Descriptor replica = std::move(*selected_replica);
 
         // Check local hot cache and update replica descriptor if cache hit
         bool cache_used = false;
@@ -1608,17 +1791,15 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
             continue;
         }
 
-        // Find the first complete replica for this key
-        Replica::Descriptor replica;
-        ErrorCode err =
-            FindFirstCompleteReplica(query_result.replicas, replica);
-        if (err != ErrorCode::OK) {
-            if (err == ErrorCode::INVALID_REPLICA) {
+        auto selected_replica = GetPreferredReplica(query_result.replicas);
+        if (!selected_replica) {
+            if (selected_replica.error() == ErrorCode::INVALID_REPLICA) {
                 LOG(ERROR) << "no_complete_replicas_found key=" << key;
             }
-            results[i] = tl::unexpected(err);
+            results[i] = tl::unexpected(selected_replica.error());
             continue;
         }
+        Replica::Descriptor replica = std::move(*selected_replica);
 
         bool cache_used = false;
         if (hot_cache_ && replica.is_memory_replica()) {
@@ -1805,6 +1986,7 @@ tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
     }
 
     ReplicaTransferSummary transfer_summary;
+    std::optional<LocalObjectLocator> local_object;
     for (const auto& replica : start_result.value()) {
         transfer_summary.RecordAllocatedReplica(replica);
     }
@@ -1828,6 +2010,20 @@ tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
     }
 
     for (const auto& replica : start_result.value()) {
+        if (!replica.is_local_disk_replica()) {
+            continue;
+        }
+        auto write_result = WriteDirectLocalObject(key, slices);
+        if (!write_result) {
+            transfer_summary.RecordFailure(ReplicaType::LOCAL_DISK,
+                                           write_result.error());
+        } else {
+            local_object = std::move(write_result.value());
+            transfer_summary.RecordSuccess(ReplicaType::LOCAL_DISK);
+        }
+    }
+
+    for (const auto& replica : start_result.value()) {
         if (replica.is_memory_replica() || replica.is_nof_replica()) {
             // Transfer data using allocated handles from all replicas
             const auto replica_type = replica.is_memory_replica()
@@ -1835,6 +2031,9 @@ tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
                                           : ReplicaType::NOF_SSD;
             ErrorCode transfer_err = TransferWrite(replica, slices);
             if (transfer_err != ErrorCode::OK) {
+                LOG(ERROR) << "Remote replica transfer failed for key_id="
+                           << SafeObjectKeyId(key)
+                           << ", error=" << toString(transfer_err);
                 transfer_summary.RecordFailure(replica_type, transfer_err);
                 continue;
             }
@@ -1854,15 +2053,57 @@ tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
 
     if (finalize_decision.end_type.has_value()) {
         auto end_result = master_client_.PutEnd(
-            ObjectMeta{key, object_checksum}, *finalize_decision.end_type);
+            BuildObjectMeta(key, object_checksum, local_object),
+            *finalize_decision.end_type);
         if (!end_result) {
             ErrorCode err = end_result.error();
             LOG(ERROR) << "Failed to end put operation: " << err;
+            if (IsAmbiguousRpcError(err) && local_object.has_value()) {
+                auto reconciled = ReconcileLocalFinalize(key, *local_object);
+                if (reconciled && *reconciled) {
+                    LOG(INFO) << "Reconciled ambiguous put finalize for key_id="
+                              << SafeObjectKeyId(key);
+                    return {};
+                }
+                if (reconciled) {
+                    auto revoke_result = master_client_.PutRevoke(
+                        key, *finalize_decision.end_type);
+                    if (!revoke_result) {
+                        LOG(ERROR) << "Failed to revoke uncommitted put after "
+                                      "finalize reconciliation: "
+                                   << toString(revoke_result.error());
+                    }
+                    CleanupDirectLocalObject(*local_object);
+                }
+            }
+            if (!IsAmbiguousRpcError(err)) {
+                if (metrics_) {
+                    metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                        std::string(
+                            StorageTargetLabel(*finalize_decision.end_type)),
+                        "finalize_failure");
+                }
+                auto revoke_result =
+                    master_client_.PutRevoke(key, *finalize_decision.end_type);
+                if (!revoke_result) {
+                    LOG(ERROR) << "Failed to revoke put after deterministic "
+                                  "finalize failure: "
+                               << toString(revoke_result.error());
+                }
+                if (local_object.has_value()) {
+                    CleanupDirectLocalObject(*local_object);
+                }
+            }
             return tl::unexpected(err);
         }
     }
 
     if (finalize_decision.revoke_type.has_value()) {
+        if (metrics_) {
+            metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                std::string(StorageTargetLabel(*finalize_decision.revoke_type)),
+                "transfer_failure");
+        }
         auto revoke_result =
             master_client_.PutRevoke(key, *finalize_decision.revoke_type);
         if (!revoke_result) {
@@ -1872,6 +2113,9 @@ tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
     }
 
     if (!finalize_decision.success) {
+        if (local_object.has_value()) {
+            CleanupDirectLocalObject(*local_object);
+        }
         return tl::unexpected(finalize_decision.error);
     }
 
@@ -1923,6 +2167,21 @@ tl::expected<void, ErrorCode> Client::Upsert(const ObjectKey& key,
 
     // Record transfer latency
     auto t0 = std::chrono::steady_clock::now();
+    ReplicaTransferSummary transfer_summary;
+    std::optional<LocalObjectLocator> local_object;
+    std::optional<LocalObjectLocator> previous_local_object;
+    for (const auto& replica : start_result.value()) {
+        transfer_summary.RecordAllocatedReplica(replica);
+        if (replica.is_local_disk_replica()) {
+            const auto& descriptor = replica.get_local_disk_descriptor();
+            if (descriptor.backend_id.has_value() &&
+                descriptor.locator.has_value()) {
+                previous_local_object = LocalObjectLocator{
+                    descriptor.backend_id.value(), descriptor.locator.value(),
+                    descriptor.object_size, descriptor.generation.value_or(1)};
+            }
+        }
+    }
 
     // Handle disk replicas first
     if (storage_backend_) {
@@ -1937,18 +2196,31 @@ tl::expected<void, ErrorCode> Client::Upsert(const ObjectKey& key,
         }
     }
 
-    // Transfer to memory replicas
     for (const auto& replica : start_result.value()) {
-        if (replica.is_memory_replica()) {
+        if (!replica.is_local_disk_replica()) {
+            continue;
+        }
+        auto write_result = WriteDirectLocalObject(key, slices);
+        if (!write_result) {
+            transfer_summary.RecordFailure(ReplicaType::LOCAL_DISK,
+                                           write_result.error());
+        } else {
+            local_object = std::move(write_result.value());
+            transfer_summary.RecordSuccess(ReplicaType::LOCAL_DISK);
+        }
+    }
+
+    // Transfer to memory and NoF replicas
+    for (const auto& replica : start_result.value()) {
+        if (replica.is_memory_replica() || replica.is_nof_replica()) {
+            const auto replica_type = replica.is_memory_replica()
+                                          ? ReplicaType::MEMORY
+                                          : ReplicaType::NOF_SSD;
             ErrorCode transfer_err = TransferWrite(replica, slices);
             if (transfer_err != ErrorCode::OK) {
-                auto revoke_result =
-                    master_client_.UpsertRevoke(key, ReplicaType::MEMORY);
-                if (!revoke_result) {
-                    LOG(ERROR) << "Failed to revoke upsert operation";
-                    return tl::unexpected(revoke_result.error());
-                }
-                return tl::unexpected(transfer_err);
+                transfer_summary.RecordFailure(replica_type, transfer_err);
+            } else {
+                transfer_summary.RecordSuccess(replica_type);
             }
         }
     }
@@ -1960,12 +2232,74 @@ tl::expected<void, ErrorCode> Client::Upsert(const ObjectKey& key,
         metrics_->transfer_metric.put_latency_us.observe(us);
     }
 
-    // End upsert operation
-    auto end_result = master_client_.UpsertEnd(ObjectMeta{key, object_checksum},
-                                               ReplicaType::MEMORY);
+    const auto finalize_decision =
+        DetermineFinalizeDecision(config, transfer_summary);
+    if (!finalize_decision.success) {
+        const auto revoke_type =
+            finalize_decision.revoke_type.value_or(ReplicaType::ALL);
+        if (metrics_) {
+            metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                std::string(StorageTargetLabel(revoke_type)),
+                "transfer_failure");
+        }
+        auto revoke_result = master_client_.UpsertRevoke(key, revoke_type);
+        if (local_object.has_value()) {
+            CleanupDirectLocalObject(*local_object);
+        }
+        if (!revoke_result) {
+            return tl::unexpected(revoke_result.error());
+        }
+        return tl::unexpected(finalize_decision.error);
+    }
+
+    auto end_result = master_client_.UpsertEnd(
+        BuildObjectMeta(key, object_checksum, local_object),
+        finalize_decision.end_type.value_or(ReplicaType::ALL));
     if (!end_result) {
         ErrorCode err = end_result.error();
         LOG(ERROR) << "Failed to end upsert operation: " << err;
+        if (IsAmbiguousRpcError(err) && local_object.has_value()) {
+            auto reconciled = ReconcileLocalFinalize(key, *local_object);
+            if (reconciled && *reconciled) {
+                if (hot_cache_) {
+                    hot_cache_->RemoveHotKey(key);
+                }
+                if (previous_local_object.has_value() &&
+                    previous_local_object->locator != local_object->locator) {
+                    CleanupDirectLocalObject(*previous_local_object);
+                }
+                return {};
+            }
+            if (reconciled) {
+                const auto end_type =
+                    finalize_decision.end_type.value_or(ReplicaType::ALL);
+                auto revoke_result = master_client_.UpsertRevoke(key, end_type);
+                if (!revoke_result) {
+                    LOG(ERROR) << "Failed to revoke uncommitted upsert after "
+                                  "finalize reconciliation: "
+                               << toString(revoke_result.error());
+                }
+                CleanupDirectLocalObject(*local_object);
+            }
+        }
+        if (!IsAmbiguousRpcError(err)) {
+            const auto end_type =
+                finalize_decision.end_type.value_or(ReplicaType::ALL);
+            if (metrics_) {
+                metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                    std::string(StorageTargetLabel(end_type)),
+                    "finalize_failure");
+            }
+            auto revoke_result = master_client_.UpsertRevoke(key, end_type);
+            if (!revoke_result) {
+                LOG(ERROR) << "Failed to revoke upsert after deterministic "
+                              "finalize failure: "
+                           << toString(revoke_result.error());
+            }
+            if (local_object.has_value()) {
+                CleanupDirectLocalObject(*local_object);
+            }
+        }
         return tl::unexpected(err);
     }
 
@@ -1975,6 +2309,12 @@ tl::expected<void, ErrorCode> Client::Upsert(const ObjectKey& key,
     // that the new value is committed so that stale fill cannot publish.
     if (hot_cache_) {
         hot_cache_->RemoveHotKey(key);
+    }
+
+    if (previous_local_object.has_value() &&
+        (!local_object.has_value() ||
+         previous_local_object->locator != local_object->locator)) {
+        CleanupDirectLocalObject(*previous_local_object);
     }
 
     return {};
@@ -2048,9 +2388,12 @@ class PutOperation {
     tl::expected<void, ErrorCode> result;
     std::vector<Replica::Descriptor> replicas;
     std::vector<PendingTransferRecord> pending_transfers;
+    std::optional<LocalObjectLocator> local_object;
+    std::optional<LocalObjectLocator> previous_local_object;
 
     size_t requested_memory_replicas = 0;
     size_t requested_nof_replicas = 0;
+    size_t requested_local_replicas = 0;
     ReplicaTransferSummary transfer_summary;
 
     // Error context for debugging
@@ -2103,12 +2446,14 @@ class PutOperation {
     void InitializeRequestedReplicas(const ReplicateConfig& config) {
         requested_memory_replicas = config.replica_num;
         requested_nof_replicas = config.nof_replica_num;
+        requested_local_replicas = config.local_replica_num.value_or(0);
     }
 
     ReplicateConfig ToReplicateConfig() const {
         ReplicateConfig config;
         config.replica_num = requested_memory_replicas;
         config.nof_replica_num = requested_nof_replicas;
+        config.local_replica_num = requested_local_replicas;
         return config;
     }
 
@@ -2116,6 +2461,21 @@ class PutOperation {
         transfer_summary = ReplicaTransferSummary{};
         for (const auto& replica : replicas) {
             transfer_summary.RecordAllocatedReplica(replica);
+        }
+    }
+
+    void CapturePreviousLocalObject() {
+        for (const auto& replica : replicas) {
+            if (!replica.is_local_disk_replica()) continue;
+            const auto& descriptor = replica.get_local_disk_descriptor();
+            if (!descriptor.backend_id.has_value() ||
+                !descriptor.locator.has_value()) {
+                continue;
+            }
+            previous_local_object = LocalObjectLocator{
+                descriptor.backend_id.value(), descriptor.locator.value(),
+                descriptor.object_size, descriptor.generation.value_or(1)};
+            break;
         }
     }
 
@@ -2289,11 +2649,22 @@ void Client::StartBatchUpsert(std::vector<PutOperation>& ops,
     // Process individual responses with robust error handling
     for (size_t i = 0; i < active_indices.size(); ++i) {
         auto& op = ops[active_indices[i]];
+        op.InitializeRequestedReplicas(config);
         if (!start_responses[i]) {
-            op.SetError(start_responses[i].error(),
-                        "Master failed to start upsert operation");
+            op.SetTerminalError(start_responses[i].error(),
+                                PutOperationState::MASTER_FAILED,
+                                "Master failed to start upsert operation");
         } else {
             op.replicas = start_responses[i].value();
+            op.CapturePreviousLocalObject();
+            op.RecordAllocatedReplicas();
+            if (!HasExpectedReplicaAllocation(config, op.transfer_summary)) {
+                op.SetTerminalError(ErrorCode::NO_AVAILABLE_HANDLE,
+                                    PutOperationState::MASTER_FAILED,
+                                    "Allocated replicas do not satisfy "
+                                    "requested replica policy");
+                continue;
+            }
             VLOG(1) << "Successfully started upsert for key " << op.key
                     << " with " << op.replicas.size() << " replicas";
         }
@@ -2305,7 +2676,16 @@ void Client::SubmitTransfers(std::vector<PutOperation>& ops) {
                     [](const PutOperation& op) { return op.IsResolved(); })) {
         return;
     }
-    if (!transfer_submitter_) {
+    const bool needs_transfer_submitter =
+        std::any_of(ops.begin(), ops.end(), [](const PutOperation& op) {
+            if (op.IsResolved()) return false;
+            return std::any_of(op.replicas.begin(), op.replicas.end(),
+                               [](const Replica::Descriptor& replica) {
+                                   return replica.is_memory_replica() ||
+                                          replica.is_nof_replica();
+                               });
+        });
+    if (needs_transfer_submitter && !transfer_submitter_) {
         LOG(ERROR) << "TransferSubmitter not initialized";
         for (auto& op : ops) {
             if (op.IsResolved()) {
@@ -2343,6 +2723,21 @@ void Client::SubmitTransfers(std::vector<PutOperation>& ops) {
                     PutToLocalFile(op.key, op.slices, disk_descriptor);
                     break;  // Only one disk replica is needed
                 }
+            }
+        }
+
+        for (const auto& replica : op.replicas) {
+            if (!replica.is_local_disk_replica()) {
+                continue;
+            }
+            auto write_result = WriteDirectLocalObject(op.key, op.slices);
+            if (!write_result) {
+                op.transfer_summary.RecordFailure(ReplicaType::LOCAL_DISK,
+                                                  write_result.error());
+                op.AppendFailureContext("Direct local write failed");
+            } else {
+                op.local_object = std::move(write_result.value());
+                op.transfer_summary.RecordSuccess(ReplicaType::LOCAL_DISK);
             }
         }
 
@@ -2433,9 +2828,11 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
     BatchFinalizeGroup end_all_group;
     BatchFinalizeGroup end_memory_group;
     BatchFinalizeGroup end_nof_group;
+    BatchFinalizeGroup end_local_group;
     BatchFinalizeGroup revoke_all_group;
     BatchFinalizeGroup revoke_memory_group;
     BatchFinalizeGroup revoke_nof_group;
+    BatchFinalizeGroup revoke_local_group;
 
     std::vector<size_t> pending_finalize_actions(ops.size(), 0);
     std::vector<bool> should_succeed(ops.size(), false);
@@ -2469,6 +2866,12 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
                 case ReplicaType::NOF_SSD:
                     add_group_entry(is_end ? end_nof_group : revoke_nof_group,
                                     key, index);
+                    ++pending_finalize_actions[index];
+                    break;
+                case ReplicaType::LOCAL_DISK:
+                    add_group_entry(
+                        is_end ? end_local_group : revoke_local_group, key,
+                        index);
                     ++pending_finalize_actions[index];
                     break;
                 default:
@@ -2519,8 +2922,9 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
         std::vector<ObjectMeta> object_metas;
         object_metas.reserve(group.indices.size());
         for (size_t i = 0; i < group.indices.size(); ++i) {
-            object_metas.emplace_back(ObjectMeta{
-                group.keys[i], ops[group.indices[i]].object_checksum});
+            const auto& op = ops[group.indices[i]];
+            object_metas.emplace_back(BuildObjectMeta(
+                group.keys[i], op.object_checksum, op.local_object));
         }
         auto responses = master_client_.BatchPutEnd(object_metas, replica_type);
         if (responses.size() != group.keys.size()) {
@@ -2533,9 +2937,47 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
         for (size_t i = 0; i < responses.size(); ++i) {
             const size_t op_idx = group.indices[i];
             if (!responses[i]) {
-                finalize_rpc_errors[op_idx] = responses[i].error();
+                const auto end_error = responses[i].error();
+                if (IsAmbiguousRpcError(end_error) &&
+                    ops[op_idx].local_object.has_value()) {
+                    auto reconciled = ReconcileLocalFinalize(
+                        group.keys[i], *ops[op_idx].local_object);
+                    if (reconciled && *reconciled) {
+                        complete_finalize_action(op_idx);
+                        continue;
+                    }
+                    if (reconciled) {
+                        auto revoke_result = master_client_.PutRevoke(
+                            group.keys[i], replica_type);
+                        if (!revoke_result) {
+                            LOG(ERROR)
+                                << "Failed to revoke uncommitted batch put "
+                                   "after finalize reconciliation for key "
+                                << group.keys[i] << ": "
+                                << toString(revoke_result.error());
+                        }
+                        CleanupDirectLocalObject(*ops[op_idx].local_object);
+                    }
+                }
+                finalize_rpc_errors[op_idx] = end_error;
                 LOG(ERROR) << "Failed to BatchPutEnd key " << group.keys[i]
-                           << ": " << toString(responses[i].error());
+                           << ": " << toString(end_error);
+                if (!IsAmbiguousRpcError(end_error)) {
+                    if (metrics_) {
+                        metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                            std::string(StorageTargetLabel(replica_type)),
+                            "finalize_failure");
+                    }
+                    auto revoke_result =
+                        master_client_.PutRevoke(group.keys[i], replica_type);
+                    if (!revoke_result) {
+                        LOG(ERROR)
+                            << "Failed to revoke batch put after deterministic "
+                               "finalize failure for key "
+                            << group.keys[i] << ": "
+                            << toString(revoke_result.error());
+                    }
+                }
                 complete_finalize_action(op_idx);
                 continue;
             }
@@ -2547,6 +2989,13 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
                                     ReplicaType replica_type) {
         if (group.keys.empty()) {
             return;
+        }
+        if (metrics_) {
+            for (size_t i = 0; i < group.keys.size(); ++i) {
+                metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                    std::string(StorageTargetLabel(replica_type)),
+                    "transfer_failure");
+            }
         }
         auto responses =
             master_client_.BatchPutRevoke(group.keys, replica_type);
@@ -2573,9 +3022,11 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
     process_end_group(end_all_group, ReplicaType::ALL);
     process_end_group(end_memory_group, ReplicaType::MEMORY);
     process_end_group(end_nof_group, ReplicaType::NOF_SSD);
+    process_end_group(end_local_group, ReplicaType::LOCAL_DISK);
     process_revoke_group(revoke_all_group, ReplicaType::ALL);
     process_revoke_group(revoke_memory_group, ReplicaType::MEMORY);
     process_revoke_group(revoke_nof_group, ReplicaType::NOF_SSD);
+    process_revoke_group(revoke_local_group, ReplicaType::LOCAL_DISK);
 
     auto append_finalize_error_context = [&](PutOperation& op, size_t index) {
         if (finalize_rpc_errors[index].has_value()) {
@@ -2598,6 +3049,11 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
         }
         if (finalize_rpc_errors[i].has_value() ||
             pending_finalize_actions[i] != 0) {
+            if (op.local_object.has_value() &&
+                (!finalize_rpc_errors[i].has_value() ||
+                 !IsAmbiguousRpcError(*finalize_rpc_errors[i]))) {
+                CleanupDirectLocalObject(*op.local_object);
+            }
             if (!should_succeed[i] && terminal_errors[i] != ErrorCode::OK) {
                 append_finalize_error_context(op, i);
                 op.SetTerminalError(
@@ -2628,62 +3084,96 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
 }
 
 void Client::FinalizeBatchUpsert(std::vector<PutOperation>& ops) {
-    std::vector<ObjectMeta> successful_object_metas;
-    std::vector<size_t> successful_indices;
-    std::vector<std::string> failed_keys;
-    std::vector<size_t> failed_indices;
-
-    successful_object_metas.reserve(ops.size());
-    successful_indices.reserve(ops.size());
-    failed_keys.reserve(ops.size());
-    failed_indices.reserve(ops.size());
-
-    for (size_t i = 0; i < ops.size(); ++i) {
-        auto& op = ops[i];
-
-        if (!op.IsResolved() && !op.replicas.empty() &&
-            !op.pending_transfers.empty()) {
-            successful_object_metas.emplace_back(
-                ObjectMeta{op.key, op.object_checksum});
-            successful_indices.emplace_back(i);
-        } else if (op.state != PutOperationState::PENDING &&
-                   !op.replicas.empty()) {
-            failed_keys.emplace_back(op.key);
-            failed_indices.emplace_back(i);
-        }
-    }
-
-    // Process successful operations
     std::vector<std::string> finalized_keys;
-    if (!successful_object_metas.empty()) {
-        finalized_keys.reserve(successful_object_metas.size());
-        auto end_responses =
-            master_client_.BatchUpsertEnd(successful_object_metas);
-        if (end_responses.size() != successful_object_metas.size()) {
-            LOG(ERROR) << "BatchUpsertEnd response size mismatch: expected "
-                       << successful_object_metas.size() << ", got "
-                       << end_responses.size();
-            for (size_t idx : successful_indices) {
-                ops[idx].SetError(ErrorCode::RPC_FAIL,
-                                  "BatchUpsertEnd response size mismatch");
+    finalized_keys.reserve(ops.size());
+    for (auto& op : ops) {
+        if (op.IsResolved() || op.replicas.empty()) continue;
+        const auto decision = DetermineFinalizeDecision(op.ToReplicateConfig(),
+                                                        op.transfer_summary);
+        if (!decision.success || !decision.end_type.has_value()) {
+            const auto revoke_type =
+                decision.revoke_type.value_or(ReplicaType::ALL);
+            if (metrics_) {
+                metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                    std::string(StorageTargetLabel(revoke_type)),
+                    "transfer_failure");
             }
-        } else {
-            for (size_t i = 0; i < end_responses.size(); ++i) {
-                const size_t op_idx = successful_indices[i];
-                if (!end_responses[i]) {
-                    LOG(ERROR) << "Failed to finalize upsert for key "
-                               << successful_object_metas[i].key << ": "
-                               << toString(end_responses[i].error());
-                    ops[op_idx].SetError(end_responses[i].error(),
-                                         "BatchUpsertEnd failed");
-                } else {
-                    ops[op_idx].SetSuccess();
-                    finalized_keys.emplace_back(successful_object_metas[i].key);
-                    VLOG(1) << "Successfully completed upsert for key "
-                            << successful_object_metas[i].key;
-                }
+            auto revoke_result =
+                master_client_.UpsertRevoke(op.key, revoke_type);
+            if (op.local_object.has_value()) {
+                CleanupDirectLocalObject(*op.local_object);
             }
+            op.SetTerminalError(
+                revoke_result ? decision.error : revoke_result.error(),
+                PutOperationState::TRANSFER_FAILED,
+                revoke_result ? "Replica transfer failed before finalize"
+                              : "Upsert revoke failed");
+            continue;
         }
+        auto end_result = master_client_.UpsertEnd(
+            BuildObjectMeta(op.key, op.object_checksum, op.local_object),
+            *decision.end_type);
+        if (!end_result) {
+            const auto end_error = end_result.error();
+            if (IsAmbiguousRpcError(end_error)) {
+                if (op.local_object.has_value()) {
+                    auto reconciled =
+                        ReconcileLocalFinalize(op.key, *op.local_object);
+                    if (reconciled && *reconciled) {
+                        op.SetSuccess();
+                        if (op.previous_local_object.has_value() &&
+                            op.previous_local_object->locator !=
+                                op.local_object->locator) {
+                            CleanupDirectLocalObject(*op.previous_local_object);
+                        }
+                        finalized_keys.emplace_back(op.key);
+                        continue;
+                    }
+                    if (reconciled) {
+                        auto revoke_result = master_client_.UpsertRevoke(
+                            op.key, *decision.end_type);
+                        if (!revoke_result) {
+                            LOG(ERROR)
+                                << "Failed to revoke uncommitted batch upsert "
+                                   "after finalize reconciliation for key "
+                                << op.key << ": "
+                                << toString(revoke_result.error());
+                        }
+                        CleanupDirectLocalObject(*op.local_object);
+                    }
+                }
+                op.SetTerminalError(
+                    end_error, PutOperationState::FINALIZE_FAILED,
+                    "Upsert finalize outcome is ambiguous; local object "
+                    "retained");
+                continue;
+            }
+            const auto revoke_type =
+                decision.revoke_type.value_or(ReplicaType::ALL);
+            if (metrics_) {
+                metrics_->heterogeneous_storage_metric.ObserveRevoke(
+                    std::string(StorageTargetLabel(revoke_type)),
+                    "finalize_failure");
+            }
+            auto revoke_result =
+                master_client_.UpsertRevoke(op.key, revoke_type);
+            if (op.local_object.has_value()) {
+                CleanupDirectLocalObject(*op.local_object);
+            }
+            op.SetTerminalError(
+                revoke_result ? end_error : revoke_result.error(),
+                PutOperationState::FINALIZE_FAILED,
+                revoke_result ? "Upsert finalize failed"
+                              : "Upsert finalize and revoke failed");
+            continue;
+        }
+        op.SetSuccess();
+        if (op.previous_local_object.has_value() &&
+            (!op.local_object.has_value() ||
+             op.previous_local_object->locator != op.local_object->locator)) {
+            CleanupDirectLocalObject(*op.previous_local_object);
+        }
+        finalized_keys.emplace_back(op.key);
     }
 
     // Success-side invalidation for finalized upserts only: a concurrent read
@@ -2693,36 +3183,6 @@ void Client::FinalizeBatchUpsert(std::vector<PutOperation>& ops) {
     // committed so those stale fills cannot publish.
     if (hot_cache_ && !finalized_keys.empty()) {
         hot_cache_->RemoveHotKeys(finalized_keys);
-    }
-
-    // Process failed operations that need cleanup
-    if (!failed_keys.empty()) {
-        auto revoke_responses = master_client_.BatchUpsertRevoke(failed_keys);
-        if (revoke_responses.size() != failed_keys.size()) {
-            LOG(ERROR) << "BatchUpsertRevoke response size mismatch: expected "
-                       << failed_keys.size() << ", got "
-                       << revoke_responses.size();
-            for (size_t idx : failed_indices) {
-                ops[idx].SetError(ErrorCode::RPC_FAIL,
-                                  "BatchUpsertRevoke response size mismatch");
-            }
-        } else {
-            for (size_t i = 0; i < revoke_responses.size(); ++i) {
-                const size_t op_idx = failed_indices[i];
-                if (!revoke_responses[i]) {
-                    LOG(ERROR)
-                        << "Failed to revoke upsert for key " << failed_keys[i]
-                        << ": " << toString(revoke_responses[i].error());
-                    std::string original_context =
-                        ops[op_idx].failure_context.value_or("unknown error");
-                    ops[op_idx].failure_context =
-                        original_context + "; revoke also failed";
-                } else {
-                    LOG(INFO) << "Successfully revoked failed upsert for key "
-                              << failed_keys[i];
-                }
-            }
-        }
     }
 
     // Ensure all operations have definitive results
@@ -3009,11 +3469,6 @@ tl::expected<long, ErrorCode> Client::RemoveAll(bool force) {
     }
 
     auto result = master_client_.RemoveAll(force);
-    if (result) {
-        if (storage_backend_) {
-            storage_backend_->RemoveAll();
-        }
-    }
     if (result && result.value() > 0 && hot_cache_) {
         hot_cache_->RemoveAllHotKeys();
     }
@@ -3389,6 +3844,12 @@ tl::expected<void, ErrorCode> Client::MountLocalDiskSegment(
     return response;
 }
 
+tl::expected<long, ErrorCode> Client::RebindLocalDiskBackend(
+    const std::string& backend_id, const std::string& transport_endpoint) {
+    return master_client_.RebindLocalDiskBackend(backend_id,
+                                                 transport_endpoint);
+}
+
 tl::expected<void, ErrorCode> Client::OffloadObjectHeartbeat(
     bool enable_offloading, std::vector<OffloadTaskItem>& offloading_objects) {
     auto response =
@@ -3404,6 +3865,16 @@ tl::expected<void, ErrorCode> Client::OffloadObjectHeartbeat(
 
 tl::expected<bool, ErrorCode> Client::PollRemoveAll() {
     return master_client_.PollRemoveAll();
+}
+
+tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>
+Client::PollLocalDiskRemovals() {
+    return master_client_.PollLocalDiskRemovals();
+}
+
+tl::expected<void, ErrorCode> Client::AckLocalDiskRemoval(
+    const std::string& key, bool success, const std::string& tenant_id) {
+    return master_client_.AckLocalDiskRemoval(key, success, tenant_id);
 }
 
 tl::expected<void, ErrorCode> Client::ReportSsdCapacity(
@@ -3835,8 +4306,9 @@ void Client::PutToLocalFile(const std::string& key,
         }
 
         // If storage succeeded, end the put operation
-        auto end_result =
-            master_client_.PutEnd(ObjectMeta{key, std::nullopt}, replica_type);
+        ObjectMeta object_meta;
+        object_meta.key = key;
+        auto end_result = master_client_.PutEnd(object_meta, replica_type);
         if (!end_result) {
             LOG(ERROR) << "Failed to end put operation for key: " << key;
         }
@@ -3858,9 +4330,39 @@ ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
             LOG(ERROR) << "NoF transfer requires contiguous slices";
             return ErrorCode::INVALID_PARAMS;
         }
+        constexpr size_t kNoFBufferAlignment = 4096;
+        std::unique_ptr<void, decltype(&hugepage_memory_free)> aligned_buffer(
+            nullptr, &hugepage_memory_free);
+        void* transfer_ptr = contiguous_range->ptr;
+        if (reinterpret_cast<uintptr_t>(transfer_ptr) % kNoFBufferAlignment !=
+            0) {
+            void* buffer = hugepage_memory_alloc(contiguous_range->size);
+            if (buffer == nullptr) {
+                LOG(ERROR) << "Failed to allocate aligned NoF staging buffer";
+                return ErrorCode::TRANSFER_FAIL;
+            }
+            aligned_buffer.reset(buffer);
+            transfer_ptr = buffer;
+            if (op_code == TransferRequest::WRITE) {
+                std::memcpy(transfer_ptr, contiguous_range->ptr,
+                            contiguous_range->size);
+            }
+        }
         future = transfer_submitter_->submit(replica_descriptor, slices,
-                                             op_code, contiguous_range->ptr,
+                                             op_code, transfer_ptr,
                                              contiguous_range->size);
+        if (!future) {
+            LOG(ERROR) << "Failed to submit transfer operation";
+            return ErrorCode::TRANSFER_FAIL;
+        }
+        VLOG(1) << "Using transfer strategy: " << future->strategy();
+        auto result = future->get();
+        if (result == ErrorCode::OK && aligned_buffer &&
+            op_code == TransferRequest::READ) {
+            std::memcpy(contiguous_range->ptr, transfer_ptr,
+                        contiguous_range->size);
+        }
+        return result;
     } else {
         future =
             transfer_submitter_->submit(replica_descriptor, slices, op_code);
@@ -3901,6 +4403,7 @@ std::vector<tl::expected<int64_t, ErrorCode>> Client::BatchTransferReadRanges(
     const std::vector<Replica::Descriptor>& replicas,
     const std::vector<std::vector<Slice>>& slices,
     const std::vector<std::vector<uint64_t>>& src_offsets) {
+    const auto started = std::chrono::steady_clock::now();
     std::vector<tl::expected<int64_t, ErrorCode>> results(
         replicas.size(), tl::unexpected(ErrorCode::INVALID_PARAMS));
     if (replicas.size() != slices.size() ||
@@ -3927,13 +4430,16 @@ std::vector<tl::expected<int64_t, ErrorCode>> Client::BatchTransferReadRanges(
                        << ", offsets=" << src_offsets[i].size();
             continue;  // results[i] stays INVALID_PARAMS
         }
-        if (!replicas[i].is_memory_replica()) {
-            LOG(ERROR) << "Range read requires a memory replica, entry=" << i;
+        if (!PlacementPolicy::SupportsScatterRangeRead(replicas[i])) {
+            LOG(ERROR) << "Range read requires a transfer-backed replica, "
+                       << "entry=" << i;
             continue;
         }
 
         const auto& handle =
-            replicas[i].get_memory_descriptor().buffer_descriptor;
+            replicas[i].is_memory_replica()
+                ? replicas[i].get_memory_descriptor().buffer_descriptor
+                : replicas[i].get_nof_descriptor().buffer_descriptor;
         int64_t transferred = 0;
         for (size_t j = 0; j < slices[i].size(); ++j) {
             builder.Add(TransferRequest::READ, handle, slices[i][j],
@@ -3950,9 +4456,15 @@ std::vector<tl::expected<int64_t, ErrorCode>> Client::BatchTransferReadRanges(
     auto operation = SubmitScatter(builder.ranges());
     if (!operation) {
         LOG(ERROR) << "Failed to submit batch range read";
-        for (auto& result : results) {
-            if (result.has_value()) {
-                result = tl::unexpected(ErrorCode::TRANSFER_FAIL);
+        for (size_t i = 0; i < results.size(); ++i) {
+            if (results[i].has_value()) {
+                results[i] = tl::unexpected(ErrorCode::TRANSFER_FAIL);
+                if (replicas[i].is_nof_replica() && metrics_) {
+                    metrics_->ObserveStorageOperation(
+                        "get", "remote_nof", false,
+                        CalculateSliceSize(slices[i]),
+                        elapsed_us_since(started));
+                }
             }
         }
         return results;
@@ -3966,6 +4478,17 @@ std::vector<tl::expected<int64_t, ErrorCode>> Client::BatchTransferReadRanges(
         LOG(ERROR) << "Range read failed, entry=" << i
                    << ", error=" << static_cast<int>(entry_errors[i].value());
         results[i] = tl::unexpected(entry_errors[i].value());
+    }
+    if (metrics_) {
+        const auto elapsed = elapsed_us_since(started);
+        for (size_t i = 0; i < results.size(); ++i) {
+            if (!replicas[i].is_nof_replica()) {
+                continue;
+            }
+            metrics_->ObserveStorageOperation(
+                "get", "remote_nof", results[i].has_value(),
+                CalculateSliceSize(slices[i]), elapsed);
+        }
     }
     return results;
 }
@@ -4074,7 +4597,15 @@ ErrorCode Client::TransferReadInternal(
 
 ErrorCode Client::TransferWrite(const Replica::Descriptor& replica_descriptor,
                                 std::vector<Slice>& slices) {
-    return TransferData(replica_descriptor, slices, TransferRequest::WRITE);
+    const auto started = std::chrono::steady_clock::now();
+    const auto result =
+        TransferData(replica_descriptor, slices, TransferRequest::WRITE);
+    if (replica_descriptor.is_nof_replica() && metrics_) {
+        metrics_->ObserveStorageOperation(
+            "put", "remote_nof", result == ErrorCode::OK,
+            CalculateSliceSize(slices), elapsed_us_since(started));
+    }
+    return result;
 }
 
 ErrorCode Client::TransferWriteRange(
@@ -4114,13 +4645,38 @@ ErrorCode Client::TransferRead(const Replica::Descriptor& replica_descriptor,
         return ErrorCode::INVALID_PARAMS;
     }
 
-    return TransferData(replica_descriptor, slices, TransferRequest::READ);
+    const auto started = std::chrono::steady_clock::now();
+    const auto result =
+        TransferData(replica_descriptor, slices, TransferRequest::READ);
+    if (metrics_ && (replica_descriptor.is_nof_replica() ||
+                     replica_descriptor.is_local_disk_replica())) {
+        const char* target = replica_descriptor.is_nof_replica()
+                                 ? "remote_nof"
+                                 : "local_nvme";
+        metrics_->ObserveStorageOperation("get", target,
+                                          result == ErrorCode::OK, total_size,
+                                          elapsed_us_since(started));
+    }
+    return result;
 }
 
 ErrorCode Client::TransferReadRange(
     const Replica::Descriptor& replica_descriptor, std::vector<Slice>& slices,
     uint64_t src_offset) {
-    return TransferReadInternal(replica_descriptor, slices, src_offset);
+    const auto started = std::chrono::steady_clock::now();
+    const auto result =
+        TransferReadInternal(replica_descriptor, slices, src_offset);
+    if (metrics_ && (replica_descriptor.is_nof_replica() ||
+                     replica_descriptor.is_local_disk_replica())) {
+        const char* target = replica_descriptor.is_nof_replica()
+                                 ? "remote_nof"
+                                 : "local_nvme";
+        metrics_->ObserveStorageOperation("get", target,
+                                          result == ErrorCode::OK,
+                                          CalculateSliceSize(slices),
+                                          elapsed_us_since(started));
+    }
+    return result;
 }
 
 void Client::PollAndDispatchTasks() {
@@ -4474,63 +5030,32 @@ void Client::StorageHeartbeatThreadMain() {
     }
 }
 
-ErrorCode Client::FindFirstCompleteReplica(
-    const std::vector<Replica::Descriptor>& replica_list,
-    Replica::Descriptor& replica) {
-    // Find the first complete replica
-    for (size_t i = 0; i < replica_list.size(); ++i) {
-        if (replica_list[i].status == ReplicaStatus::COMPLETE) {
-            replica = replica_list[i];
-            return ErrorCode::OK;
-        }
-    }
-
-    // No complete replica found
-    return ErrorCode::INVALID_REPLICA;
-}
-
 tl::expected<Replica::Descriptor, ErrorCode> Client::GetPreferredReplica(
-    const std::vector<Replica::Descriptor>& replica_list) {
-    if (replica_list.empty()) {
-        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
-    }
-    if (mounted_segments_.empty() || replica_list.size() == 1) {
-        return replica_list[0];
-    }
-
-    std::unordered_set<std::string> local_endpoints;
-    {
-        std::lock_guard<std::mutex> lock(mounted_segments_mutex_);
-        for (const auto& [segment_id, segment] : mounted_segments_) {
-            local_endpoints.insert(segment.te_endpoint);
+    const std::vector<Replica::Descriptor>& replica_list,
+    ReadSourceRequirement requirement) {
+    std::vector<Replica::Descriptor> eligible_replicas;
+    eligible_replicas.reserve(replica_list.size());
+    for (const auto& replica : replica_list) {
+        if (replica.status != ReplicaStatus::COMPLETE) {
+            continue;
         }
-    }
-
-    // Prefer local MEMORY replicas first
-    for (const auto& rep : replica_list) {
-        if (rep.is_memory_replica()) {
-            const auto& mem_desc = rep.get_memory_descriptor();
-            const std::string& endpoint =
-                mem_desc.buffer_descriptor.transport_endpoint_;
-            if (local_endpoints.count(endpoint)) {
-                return rep;
-            }
+        if (requirement == ReadSourceRequirement::MEMORY_ONLY &&
+            !replica.is_memory_replica()) {
+            continue;
         }
-    }
-
-    // Then prefer local NOF_SSD replicas
-    for (const auto& rep : replica_list) {
-        if (rep.is_nof_replica()) {
-            const auto& nof_desc = rep.get_nof_descriptor();
-            const std::string& endpoint =
-                nof_desc.buffer_descriptor.transport_endpoint_;
-            if (local_endpoints.count(endpoint)) {
-                return rep;
-            }
+        if (requirement == ReadSourceRequirement::SCATTER_RANGE &&
+            !PlacementPolicy::SupportsScatterRangeRead(replica)) {
+            continue;
         }
+        eligible_replicas.push_back(replica);
     }
 
-    return replica_list[0];
+    const auto* selected = PlacementPolicy::SelectReadSource(
+        eligible_replicas, GetLocalEndpoints());
+    if (selected == nullptr) {
+        return tl::make_unexpected(ErrorCode::INVALID_REPLICA);
+    }
+    return *selected;
 }
 
 size_t Client::GetLocalHotCacheSizeFromEnv() {

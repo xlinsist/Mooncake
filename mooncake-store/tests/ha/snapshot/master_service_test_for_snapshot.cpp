@@ -2474,6 +2474,7 @@ TEST_F(MasterServiceSnapshotTest, OffloadObjectHeartbeat) {
     auto mount_local_disk_result =
         service_->MountLocalDiskSegment(client_id, false);
     ASSERT_TRUE(mount_local_disk_result.has_value());
+    SetLocalDiskAccounting(*service_, client_id, 8192, 3072);
     for (size_t i = 0; i < key_cnt; i++) {
         auto key = GenerateKeyForSegment(client_id, service_, segment.name);
     }

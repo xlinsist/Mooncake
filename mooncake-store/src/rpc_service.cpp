@@ -385,6 +385,13 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
         [] { MasterMetricManager::instance().inc_put_start_failures(); });
 }
 
+tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
+WrappedMasterService::PutStartManaged(
+    const ManagedPlacementStartRequest& request) {
+    return PutStart(request.client_id, request.key, request.value_length,
+                    request.config, request.tenant_id);
+}
+
 tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
     const UUID& client_id, const ObjectMeta& object_meta,
     ReplicaType replica_type, const std::string& tenant_id) {
@@ -406,6 +413,12 @@ tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
         },
         [] { MasterMetricManager::instance().inc_put_end_requests(); },
         [] { MasterMetricManager::instance().inc_put_end_failures(); });
+}
+
+tl::expected<void, ErrorCode> WrappedMasterService::PutEndPlacement(
+    const PlacementEndRequest& request) {
+    return PutEnd(request.client_id, request.object_meta, request.replica_type,
+                  request.tenant_id);
 }
 
 tl::expected<void, ErrorCode> WrappedMasterService::PutRevoke(
@@ -533,6 +546,13 @@ WrappedMasterService::BatchPutStart(const UUID& client_id,
     return results;
 }
 
+std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
+WrappedMasterService::BatchPutStartManaged(
+    const ManagedPlacementBatchStartRequest& request) {
+    return BatchPutStart(request.client_id, request.keys, request.value_lengths,
+                         request.config, request.tenant_id);
+}
+
 std::vector<tl::expected<void, ErrorCode>> WrappedMasterService::BatchPutEnd(
     const UUID& client_id, const std::vector<ObjectMeta>& object_metas,
     ReplicaType replica_type, const std::string& tenant_id) {
@@ -571,6 +591,13 @@ std::vector<tl::expected<void, ErrorCode>> WrappedMasterService::BatchPutEnd(
                       ", success=", results.size() - failure_count,
                       ", failures=", failure_count);
     return results;
+}
+
+std::vector<tl::expected<void, ErrorCode>>
+WrappedMasterService::BatchPutEndPlacement(
+    const PlacementBatchEndRequest& request) {
+    return BatchPutEnd(request.client_id, request.object_metas,
+                       request.replica_type, request.tenant_id);
 }
 
 std::vector<tl::expected<void, ErrorCode>> WrappedMasterService::BatchPutRevoke(
@@ -642,6 +669,13 @@ WrappedMasterService::UpsertStart(const UUID& client_id, const std::string& key,
         [] { MasterMetricManager::instance().inc_put_start_failures(); });
 }
 
+tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
+WrappedMasterService::UpsertStartManaged(
+    const ManagedPlacementStartRequest& request) {
+    return UpsertStart(request.client_id, request.key, request.value_length,
+                       request.config, request.tenant_id);
+}
+
 tl::expected<void, ErrorCode> WrappedMasterService::UpsertEnd(
     const UUID& client_id, const ObjectMeta& object_meta,
     ReplicaType replica_type, const std::string& tenant_id) {
@@ -663,6 +697,12 @@ tl::expected<void, ErrorCode> WrappedMasterService::UpsertEnd(
         },
         [] { MasterMetricManager::instance().inc_put_end_requests(); },
         [] { MasterMetricManager::instance().inc_put_end_failures(); });
+}
+
+tl::expected<void, ErrorCode> WrappedMasterService::UpsertEndPlacement(
+    const PlacementEndRequest& request) {
+    return UpsertEnd(request.client_id, request.object_meta,
+                     request.replica_type, request.tenant_id);
 }
 
 tl::expected<void, ErrorCode> WrappedMasterService::UpsertRevoke(
@@ -746,6 +786,14 @@ WrappedMasterService::BatchUpsertStart(
     return results;
 }
 
+std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
+WrappedMasterService::BatchUpsertStartManaged(
+    const ManagedPlacementBatchStartRequest& request) {
+    return BatchUpsertStart(request.client_id, request.keys,
+                            request.value_lengths, request.config,
+                            request.tenant_id);
+}
+
 std::vector<tl::expected<void, ErrorCode>> WrappedMasterService::BatchUpsertEnd(
     const UUID& client_id, const std::vector<ObjectMeta>& object_metas,
     const std::string& tenant_id) {
@@ -784,6 +832,13 @@ std::vector<tl::expected<void, ErrorCode>> WrappedMasterService::BatchUpsertEnd(
                       ", success=", results.size() - failure_count,
                       ", failures=", failure_count);
     return results;
+}
+
+std::vector<tl::expected<void, ErrorCode>>
+WrappedMasterService::BatchUpsertEndPlacement(
+    const PlacementBatchEndRequest& request) {
+    return BatchUpsertEnd(request.client_id, request.object_metas,
+                          request.tenant_id);
 }
 
 std::vector<tl::expected<void, ErrorCode>>
@@ -1355,6 +1410,23 @@ tl::expected<std::string, ErrorCode> WrappedMasterService::GetFsdir() {
     return result;
 }
 
+tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>
+WrappedMasterService::PollLocalDiskRemovals(const UUID& client_id) {
+    return master_service_.PollLocalDiskRemovals(client_id);
+}
+
+tl::expected<void, ErrorCode> WrappedMasterService::AckLocalDiskRemoval(
+    const UUID& client_id, const std::string& key, bool success,
+    const std::string& tenant_id) {
+    return WithRequestTenant(
+        master_service_.IsTenantQuotaEnabled() ? std::string_view(tenant_id)
+                                               : TenantId::kDefaultValue,
+        [&](const TenantId& resolved_tenant_id) {
+            return master_service_.AckLocalDiskRemoval(
+                client_id, key, resolved_tenant_id, success);
+        });
+}
+
 tl::expected<GetStorageConfigResponse, ErrorCode>
 WrappedMasterService::GetStorageConfig() {
     ScopedVLogTimer timer(1, "GetStorageConfig");
@@ -1482,6 +1554,13 @@ tl::expected<void, ErrorCode> WrappedMasterService::MountLocalDiskSegment(
 
     timer.LogResponseExpected(result);
     return result;
+}
+
+tl::expected<long, ErrorCode> WrappedMasterService::RebindLocalDiskBackend(
+    const UUID& client_id, const std::string& backend_id,
+    const std::string& transport_endpoint) {
+    return master_service_.RebindLocalDiskBackend(client_id, backend_id,
+                                                  transport_endpoint);
 }
 
 tl::expected<std::vector<OffloadTaskItem>, ErrorCode>
@@ -1653,25 +1732,47 @@ void RegisterRpcService(
             &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::PutStart>(
         &wrapped_master_service);
+    server.register_handler<&mooncake::WrappedMasterService::PutStartManaged>(
+        &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::PutEnd>(
+        &wrapped_master_service);
+    server.register_handler<&mooncake::WrappedMasterService::PutEndPlacement>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::PutRevoke>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchPutStart>(
         &wrapped_master_service);
+    server.register_handler<
+        &mooncake::WrappedMasterService::BatchPutStartManaged>(
+        &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchPutEnd>(
+        &wrapped_master_service);
+    server.register_handler<
+        &mooncake::WrappedMasterService::BatchPutEndPlacement>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchPutRevoke>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::UpsertStart>(
         &wrapped_master_service);
+    server
+        .register_handler<&mooncake::WrappedMasterService::UpsertStartManaged>(
+            &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::UpsertEnd>(
         &wrapped_master_service);
+    server
+        .register_handler<&mooncake::WrappedMasterService::UpsertEndPlacement>(
+            &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::UpsertRevoke>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchUpsertStart>(
         &wrapped_master_service);
+    server.register_handler<
+        &mooncake::WrappedMasterService::BatchUpsertStartManaged>(
+        &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchUpsertEnd>(
+        &wrapped_master_service);
+    server.register_handler<
+        &mooncake::WrappedMasterService::BatchUpsertEndPlacement>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchUpsertRevoke>(
         &wrapped_master_service);
@@ -1720,7 +1821,16 @@ void RegisterRpcService(
     server.register_handler<&mooncake::WrappedMasterService::ServiceReady>(
         &wrapped_master_service);
     server.register_handler<
+        &mooncake::WrappedMasterService::PollLocalDiskRemovals>(
+        &wrapped_master_service);
+    server
+        .register_handler<&mooncake::WrappedMasterService::AckLocalDiskRemoval>(
+            &wrapped_master_service);
+    server.register_handler<
         &mooncake::WrappedMasterService::MountLocalDiskSegment>(
+        &wrapped_master_service);
+    server.register_handler<
+        &mooncake::WrappedMasterService::RebindLocalDiskBackend>(
         &wrapped_master_service);
     server.register_handler<
         &mooncake::WrappedMasterService::OffloadObjectHeartbeat>(

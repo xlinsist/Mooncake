@@ -44,9 +44,42 @@ int NoFRegisterClient::set_register(const std::string &nqn, size_t nsid,
     NoFSegment segment;
     segment.base = base;
     segment.size = size;
-    segment.id = generate_uuid();
     segment.name = te_endpoint;
     segment.te_endpoint = te_endpoint;
+
+    auto matching_segments_result =
+        master_client_.GetNoFSegmentsByName(te_endpoint);
+    if (!matching_segments_result) {
+        if (matching_segments_result.error() != ErrorCode::SEGMENT_NOT_FOUND) {
+            LOG(ERROR) << "Failed to query existing NoF segments: "
+                       << static_cast<int>(matching_segments_result.error());
+            return OPERATION_FAILED;
+        }
+        segment.id = generate_uuid();
+        auto remount_result = master_client_.ReMountNoFSegment({segment});
+        if (!remount_result) {
+            LOG(ERROR) << "remount_segment_to_master_failed ";
+            return OPERATION_FAILED;
+        }
+        return OPERATION_OK;
+    }
+    const auto &matching_segments = matching_segments_result.value();
+    if (matching_segments.size() > 1) {
+        LOG(ERROR) << "Multiple NoF segments found for endpoint: "
+                   << te_endpoint;
+        return OPERATION_FAILED;
+    }
+    if (matching_segments.size() == 1) {
+        segment.id = matching_segments.front().segment_id;
+        auto remount_result = master_client_.ReMountNoFSegment({segment});
+        if (!remount_result) {
+            LOG(ERROR) << "remount_segment_to_master_failed ";
+            return OPERATION_FAILED;
+        }
+        return OPERATION_OK;
+    }
+
+    segment.id = generate_uuid();
     auto mount_result = master_client_.MountNoFSegment(segment);
     if (!mount_result) {
         LOG(ERROR) << "mount_segment_to_master_failed ";

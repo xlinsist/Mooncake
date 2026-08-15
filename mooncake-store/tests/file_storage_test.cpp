@@ -84,6 +84,11 @@ class FileStorageTest : public ::testing::Test {
         return fileStorage.BatchLoad(batch_object);
     }
 
+    tl::expected<void, ErrorCode> InitDirectLocalBackend(
+        FileStorage& fileStorage) {
+        return fileStorage.direct_local_backend_->Init();
+    }
+
     tl::expected<bool, ErrorCode> FileStorageIsEnableOffloading(
         FileStorage& fileStorage) {
         return fileStorage.IsEnableOffloading();
@@ -222,6 +227,38 @@ TEST_F(FileStorageTest, IsEnableOffloading) {
         FileStorageIsEnableOffloading(fileStorage3);
     ASSERT_TRUE(enable_offloading_result3 &&
                 !enable_offloading_result3.value());
+}
+
+TEST_F(FileStorageTest, DefaultBucketOffloadUsesDedicatedDirectLocalBackend) {
+    auto config = FileStorageConfig::FromEnvironment();
+    ASSERT_EQ(config.storage_backend_type, StorageBackendType::kBucket);
+    config.storage_filepath = data_path;
+    config.local_buffer_size = 128 * 1024 * 1024;
+    std::string value = "dedicated-direct-local";
+    LocalObjectLocator committed;
+    std::string backend_id;
+    {
+        FileStorage storage(config, nullptr, "localhost:9003");
+        ASSERT_TRUE(InitDirectLocalBackend(storage));
+        auto staged = storage.StageDirectObject(
+            "direct-key", std::vector<Slice>{{value.data(), value.size()}});
+        ASSERT_TRUE(staged);
+        auto commit_result = storage.CommitDirectObject(*staged);
+        ASSERT_TRUE(commit_result);
+        committed = *commit_result;
+        ASSERT_FALSE(committed.backend_id.empty());
+        backend_id = committed.backend_id;
+    }
+
+    FileStorage restarted(config, nullptr, "localhost:9004");
+    ASSERT_TRUE(InitDirectLocalBackend(restarted));
+    EXPECT_EQ(restarted.GetDirectBackendId().value(), backend_id);
+    std::string loaded(value.size(), '\0');
+    ASSERT_TRUE(restarted.LoadDirectObject(
+        committed, Slice{loaded.data(), loaded.size()}));
+    EXPECT_EQ(loaded, value);
+    ASSERT_TRUE(restarted.RemoveDirectObject(committed));
+    ASSERT_TRUE(restarted.RemoveDirectObject(committed));
 }
 
 TEST_F(FileStorageTest, BatchGetUsesPinnedArenaAndFallsBackWhenFull) {

@@ -30,6 +30,11 @@
 
 namespace mooncake {
 
+namespace detail {
+bool HasCommittedLocalReplica(const std::vector<Replica::Descriptor>& replicas,
+                              const LocalObjectLocator& local_object);
+}
+
 class PutOperation;
 class RealClient;
 
@@ -238,8 +243,9 @@ class Client {
      * @brief Batch ranged read against cached replicas. Fragments from all
      * entries are issued as one scatter transfer so the transport can coalesce
      * everything bound for the same segment, then awaited together. Requires
-     * memory replicas. Returns per-entry total bytes transferred or an
-     * ErrorCode. Used by RealClient get sessions. No Master RPC.
+     * transfer-backed MEMORY or NOF_SSD replicas. Returns per-entry total
+     * bytes transferred or an ErrorCode. Used by RealClient get sessions. No
+     * Master RPC.
      */
     std::vector<tl::expected<int64_t, ErrorCode>> BatchTransferReadRanges(
         const std::vector<Replica::Descriptor>& replicas,
@@ -456,6 +462,9 @@ class Client {
      */
     tl::expected<void, ErrorCode> MountLocalDiskSegment(bool enable_offloading);
 
+    tl::expected<long, ErrorCode> RebindLocalDiskBackend(
+        const std::string& backend_id, const std::string& transport_endpoint);
+
     /**
      * @brief Heartbeat call to collect object-level statistics and retrieve the
      * set of non-offloaded objects.
@@ -469,6 +478,13 @@ class Client {
         std::vector<OffloadTaskItem>& offloading_objects);
 
     tl::expected<bool, ErrorCode> PollRemoveAll();
+
+    tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>
+    PollLocalDiskRemovals();
+
+    tl::expected<void, ErrorCode> AckLocalDiskRemoval(
+        const std::string& key, bool success,
+        const std::string& tenant_id = "default");
 
     tl::expected<void, ErrorCode> ReportSsdCapacity(
         int64_t ssd_total_capacity_bytes);
@@ -596,6 +612,15 @@ class Client {
         }
     }
 
+    void ObserveStorageOperation(const std::string& operation,
+                                 const std::string& target, bool success,
+                                 uint64_t bytes, uint64_t latency_us) {
+        if (metrics_ != nullptr) {
+            metrics_->ObserveStorageOperation(operation, target, success, bytes,
+                                              latency_us);
+        }
+    }
+
     // For Prometheus-style metrics
     tl::expected<std::string, ErrorCode> SerializeMetrics() {
         if (metrics_ == nullptr) {
@@ -635,8 +660,15 @@ class Client {
     // Return sorted NUMA node IDs that have at least one RDMA NIC.
     [[nodiscard]] std::vector<int> GetNicNumaNodes() const;
 
+    enum class ReadSourceRequirement {
+        ANY,
+        MEMORY_ONLY,
+        SCATTER_RANGE,
+    };
+
     tl::expected<Replica::Descriptor, ErrorCode> GetPreferredReplica(
-        const std::vector<Replica::Descriptor>& replica_list);
+        const std::vector<Replica::Descriptor>& replica_list,
+        ReadSourceRequirement requirement = ReadSourceRequirement::ANY);
 
     std::unordered_set<std::string> GetLocalEndpoints() const {
         std::lock_guard<std::mutex> lock(mounted_segments_mutex_);
@@ -721,6 +753,19 @@ class Client {
     std::vector<tl::expected<void, ErrorCode>> BatchPutRevoke(
         const std::vector<std::string>& keys,
         ReplicaType replica_type = ReplicaType::ALL);
+
+    void ConfigureDirectLocalStorage(
+        std::string transport_endpoint,
+        std::function<tl::expected<StagedLocalObject, ErrorCode>(
+            const std::string&, const std::vector<Slice>&)>
+            stage,
+        std::function<tl::expected<LocalObjectLocator, ErrorCode>(
+            const StagedLocalObject&)>
+            commit,
+        std::function<tl::expected<void, ErrorCode>(const StagedLocalObject&)>
+            abort,
+        std::function<tl::expected<void, ErrorCode>(const LocalObjectLocator&)>
+            remove);
 
    protected:
     /**
@@ -831,17 +876,6 @@ class Client {
                             const Replica::Descriptor& replica);
 
     /**
-     * @brief Find the first complete replica from a replica list
-     * @param replica_list List of replicas to search through
-     * @param replica the first complete replica (file or memory)
-     * @return ErrorCode::OK if found, ErrorCode::INVALID_REPLICA if no complete
-     * replica
-     */
-    ErrorCode FindFirstCompleteReplica(
-        const std::vector<Replica::Descriptor>& replica_list,
-        Replica::Descriptor& replica);
-
-    /**
      * @brief Batch put helper methods for structured approach
      */
     std::vector<PutOperation> CreatePutOperations(
@@ -867,6 +901,16 @@ class Client {
         std::unordered_map<std::string, std::vector<Slice>>& slices);
     ReplicateConfig AttachHostId(const ReplicateConfig& config) const;
 
+    tl::expected<LocalObjectLocator, ErrorCode> WriteDirectLocalObject(
+        const std::string& key, const std::vector<Slice>& slices);
+    void CleanupDirectLocalObject(const LocalObjectLocator& locator);
+    ObjectMeta BuildObjectMeta(const std::string& key,
+                               std::optional<uint64_t> object_checksum,
+                               const std::optional<LocalObjectLocator>&
+                                   local_object = std::nullopt) const;
+    tl::expected<bool, ErrorCode> ReconcileLocalFinalize(
+        const std::string& key, const LocalObjectLocator& local_object);
+
     // Client identification
     const UUID client_id_;
 
@@ -877,6 +921,17 @@ class Client {
     std::shared_ptr<TransferEngine> transfer_engine_;
     MasterClient master_client_;
     std::unique_ptr<TransferSubmitter> transfer_submitter_;
+    std::string direct_local_transport_endpoint_;
+    std::function<tl::expected<StagedLocalObject, ErrorCode>(
+        const std::string&, const std::vector<Slice>&)>
+        direct_local_stage_;
+    std::function<tl::expected<LocalObjectLocator, ErrorCode>(
+        const StagedLocalObject&)>
+        direct_local_commit_;
+    std::function<tl::expected<void, ErrorCode>(const StagedLocalObject&)>
+        direct_local_abort_;
+    std::function<tl::expected<void, ErrorCode>(const LocalObjectLocator&)>
+        direct_local_remove_;
 
     // Mutex to protect mounted_segments_
     mutable std::mutex mounted_segments_mutex_;

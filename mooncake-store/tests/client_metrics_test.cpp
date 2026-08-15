@@ -197,6 +197,42 @@ TEST_F(ClientMetricsTest, ClientMetricsSummaryTest) {
     std::cout << "Full Client Metrics Summary:\n" << summary << std::endl;
 }
 
+TEST_F(ClientMetricsTest, HeterogeneousStorageMetricsSerializeRequiredNames) {
+    ClientMetric metrics;
+    metrics.ObserveStorageOperation("put", "local_nvme", true, 4096, 12);
+    metrics.ObserveStorageOperation("get", "local_nvme", true, 2048, 10);
+    metrics.ObserveStorageOperation("get", "remote_nof", false, 4096, 20);
+    metrics.ObserveStorageOperation("remove", "local_nvme", true, 4096, 8);
+    metrics.heterogeneous_storage_metric.ObserveRevoke("remote_nof",
+                                                       "transfer_failure");
+    metrics.heterogeneous_storage_metric.ObserveOrphanCleanup("local_nvme",
+                                                              true);
+
+    std::string serialized;
+    metrics.serialize(serialized);
+    EXPECT_NE(serialized.find("storage_put_total"), std::string::npos);
+    EXPECT_NE(serialized.find("storage_get_total"), std::string::npos);
+    EXPECT_NE(serialized.find("storage_remove_total"), std::string::npos);
+    EXPECT_NE(serialized.find("storage_operation_latency_us"),
+              std::string::npos);
+    EXPECT_NE(serialized.find("storage_bytes_total"), std::string::npos);
+    EXPECT_NE(serialized.find("storage_revoke_total"), std::string::npos);
+    EXPECT_NE(serialized.find("storage_orphan_cleanup_total"),
+              std::string::npos);
+    EXPECT_NE(serialized.find(
+                  "storage_get_total{target=\"local_nvme\",result=\"success\"}"),
+              std::string::npos);
+    EXPECT_NE(serialized.find(
+                  "storage_get_total{target=\"remote_nof\",result=\"failure\"}"),
+              std::string::npos);
+    EXPECT_NE(serialized.find(
+                  "storage_bytes_total{operation=\"get\",target=\"local_nvme\"} 2048"),
+              std::string::npos);
+    EXPECT_NE(serialized.find(
+                  "storage_bytes_total{operation=\"get\",target=\"remote_nof\"} 4096"),
+              std::string::npos);
+}
+
 TEST_F(ClientMetricsTest, ByteFormattingTest) {
     TransferMetric metrics;
 

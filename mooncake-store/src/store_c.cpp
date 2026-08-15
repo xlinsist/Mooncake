@@ -41,7 +41,12 @@ inline const char *c_str_or(const char *s, const char *fallback) {
 mooncake::ReplicateConfig to_replicate_config(
     const mooncake_replicate_config_t *c_config) {
     mooncake::ReplicateConfig config;
-    if (!c_config) return config;
+    if (!c_config) {
+        config.placement_control = mooncake::PlacementControl::MANAGED;
+        return config;
+    }
+
+    config.placement_control = mooncake::PlacementControl::MANUAL;
 
     config.replica_num = c_config->replica_num;
     config.soft_pin_action = c_config->with_soft_pin != 0

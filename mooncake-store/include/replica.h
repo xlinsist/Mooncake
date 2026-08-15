@@ -15,6 +15,7 @@
 #include <optional>
 #include <string_view>
 #include <ostream>
+#include <ylt/struct_pack.hpp>
 
 #include "types.h"
 #include "allocator.h"
@@ -64,6 +65,11 @@ enum class SoftPinAction : uint8_t {
     PRESERVE = 0,
     ENABLE = 1,
     DISABLE = 2,
+};
+
+enum class PlacementControl : uint8_t {
+    MANUAL = 0,
+    MANAGED = 1,
 };
 
 inline std::ostream& operator<<(std::ostream& os,
@@ -121,6 +127,8 @@ struct ReplicateConfig {
     // ungrouped. Grouped keys share metadata routing, coalesced lease refresh,
     // and memory eviction behavior.
     std::optional<std::vector<std::string>> group_ids{};
+    struct_pack::compatible<PlacementControl, 20260813> placement_control{};
+    struct_pack::compatible<size_t, 20260814> local_replica_num{};
 
     ReplicateConfig ForSingleKey(size_t key_index) const {
         ReplicateConfig key_config = *this;
@@ -134,6 +142,12 @@ struct ReplicateConfig {
     friend std::ostream& operator<<(std::ostream& os,
                                     const ReplicateConfig& config) noexcept {
         os << "ReplicateConfig: { replica_num: " << config.replica_num
+           << ", placement_control: "
+           << (config.placement_control.value_or(PlacementControl::MANUAL) ==
+                       PlacementControl::MANAGED
+                   ? "MANAGED"
+                   : "MANUAL")
+           << ", local_replica_num: " << config.local_replica_num.value_or(0)
            << ", nof_replica_num: " << config.nof_replica_num
            << ", soft_pin_action: " << config.soft_pin_action
            << ", soft_pin_ttl_ms: ";
@@ -178,6 +192,12 @@ struct ReplicateConfig {
     }
 };
 
+inline ReplicateConfig ManagedReplicateConfig() {
+    ReplicateConfig config;
+    config.placement_control = PlacementControl::MANAGED;
+    return config;
+}
+
 enum class ReplicaWriteMode {
     SINGLE_REPLICA,
     FLEXIBLE_DUAL_REPLICA,
@@ -212,6 +232,11 @@ struct LocalDiskReplicaData {
     UUID client_id;
     uint64_t object_size = 0;
     std::string transport_endpoint;
+    std::string backend_id;
+    std::string locator;
+    uint64_t generation{0};
+    std::string host_id;
+    uint32_t removal_retry_count{0};
 };
 
 struct MemoryDescriptor {
@@ -234,7 +259,13 @@ struct LocalDiskDescriptor {
     UUID client_id;
     uint64_t object_size = 0;
     std::string transport_endpoint;
-    YLT_REFL(LocalDiskDescriptor, client_id, object_size, transport_endpoint);
+    struct_pack::compatible<std::string, 20260816> backend_id;
+    struct_pack::compatible<std::string, 20260817> locator;
+    struct_pack::compatible<uint64_t, 20260818> generation;
+    struct_pack::compatible<std::string, 20260819> host_id;
+    struct_pack::compatible<uint32_t, 20260820> removal_retry_count;
+    YLT_REFL(LocalDiskDescriptor, client_id, object_size, transport_endpoint,
+             backend_id, locator, generation, host_id, removal_retry_count);
 };
 
 class Replica {
@@ -276,7 +307,42 @@ class Replica {
             std::string transport_endpoint, ReplicaStatus status)
         : id_(next_id_.fetch_add(1)),
           data_(LocalDiskReplicaData{client_id, object_size,
-                                     std::move(transport_endpoint)}),
+                                     std::move(transport_endpoint), "", "", 0,
+                                     "", 0}),
+          status_(status),
+          refcnt_(0) {
+        MasterMetricManager::instance().inc_allocated_file_size(object_size);
+    }
+
+    Replica(UUID client_id, uint64_t object_size,
+            std::string transport_endpoint, std::string backend_id,
+            std::string locator, uint64_t generation, ReplicaStatus status)
+        : id_(next_id_.fetch_add(1)),
+          data_(LocalDiskReplicaData{
+              client_id, object_size, std::move(transport_endpoint),
+              std::move(backend_id), std::move(locator), generation, "", 0}),
+          status_(status),
+          refcnt_(0) {
+        MasterMetricManager::instance().inc_allocated_file_size(object_size);
+    }
+
+    Replica(UUID client_id, uint64_t object_size,
+            std::string transport_endpoint, std::string backend_id,
+            std::string locator, uint64_t generation, std::string host_id,
+            ReplicaStatus status)
+        : Replica(client_id, object_size, std::move(transport_endpoint),
+                  std::move(backend_id), std::move(locator), generation,
+                  std::move(host_id), 0, status) {}
+
+    Replica(UUID client_id, uint64_t object_size,
+            std::string transport_endpoint, std::string backend_id,
+            std::string locator, uint64_t generation, std::string host_id,
+            uint32_t removal_retry_count, ReplicaStatus status)
+        : id_(next_id_.fetch_add(1)),
+          data_(LocalDiskReplicaData{
+              client_id, object_size, std::move(transport_endpoint),
+              std::move(backend_id), std::move(locator), generation,
+              std::move(host_id), removal_retry_count}),
           status_(status),
           refcnt_(0) {
         MasterMetricManager::instance().inc_allocated_file_size(object_size);
@@ -415,6 +481,14 @@ class Replica {
         return true;
     }
 
+    bool replace_nof_buffer(std::unique_ptr<AllocatedBuffer> buffer) {
+        if (!buffer || !is_nof_replica()) {
+            return false;
+        }
+        std::get<NoFReplicaData>(data_).buffer = std::move(buffer);
+        return true;
+    }
+
     [[nodiscard]] bool has_invalid_nof_handle() const {
         if (is_nof_replica()) {
             const auto& nof_data = std::get<NoFReplicaData>(data_);
@@ -492,6 +566,15 @@ class Replica {
             LOG(WARNING) << "Replica already marked as removed";
         } else {
             LOG(ERROR) << "Cannot mark_removed from status: " << status_;
+        }
+    }
+
+    void restore_removed_to_complete() {
+        if (status_ == ReplicaStatus::REMOVED) {
+            status_ = ReplicaStatus::COMPLETE;
+        } else {
+            LOG(ERROR) << "Cannot restore removed replica from status: "
+                       << status_;
         }
     }
 
@@ -677,6 +760,11 @@ inline Replica::Descriptor Replica::get_descriptor() const {
         local_disk_desc.client_id = disk_data.client_id;
         local_disk_desc.object_size = disk_data.object_size;
         local_disk_desc.transport_endpoint = disk_data.transport_endpoint;
+        local_disk_desc.backend_id = disk_data.backend_id;
+        local_disk_desc.locator = disk_data.locator;
+        local_disk_desc.generation = disk_data.generation;
+        local_disk_desc.host_id = disk_data.host_id;
+        local_disk_desc.removal_retry_count = disk_data.removal_retry_count;
         desc.descriptor_variant = std::move(local_disk_desc);
     }
 

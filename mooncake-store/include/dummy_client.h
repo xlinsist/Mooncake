@@ -52,7 +52,7 @@ class DummyClient : public PyClient {
     uint64_t alloc_from_mem_pool(size_t size);
 
     int put(const std::string &key, std::span<const char> value,
-            const ReplicateConfig &config = ReplicateConfig{});
+            const ReplicateConfig &config = ManagedReplicateConfig());
 
     int register_buffer(void *buffer, size_t size);
 
@@ -85,27 +85,27 @@ class DummyClient : public PyClient {
         bool prefer_same_node);
 
     int put_from(const std::string &key, void *buffer, size_t size,
-                 const ReplicateConfig &config = ReplicateConfig{});
+                 const ReplicateConfig &config = ManagedReplicateConfig());
 
     int put_from_with_metadata(
         const std::string &key, void *buffer, void *metadata_buffer,
         size_t size, size_t metadata_size,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<int> batch_put_from(
         const std::vector<std::string> &keys,
         const std::vector<void *> &buffers, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<int> batch_put_from_multi_buffers(
         const std::vector<std::string> &keys,
         const std::vector<std::vector<void *>> &all_buffers,
         const std::vector<std::vector<size_t>> &all_sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<int> batch_put_from_cuda_ipc(
         const std::vector<CudaIpcWriteRequest> &requests,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::shared_ptr<BufferHandle> get_buffer(const std::string &key);
 
@@ -114,30 +114,30 @@ class DummyClient : public PyClient {
 
     int put_parts(const std::string &key,
                   std::vector<std::span<const char>> values,
-                  const ReplicateConfig &config = ReplicateConfig{});
+                  const ReplicateConfig &config = ManagedReplicateConfig());
 
     int put_batch(const std::vector<std::string> &keys,
                   const std::vector<std::span<const char>> &values,
-                  const ReplicateConfig &config = ReplicateConfig{});
+                  const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert(const std::string &key, std::span<const char> value,
-               const ReplicateConfig &config = ReplicateConfig{});
+               const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert_from(const std::string &key, void *buffer, size_t size,
-                    const ReplicateConfig &config = ReplicateConfig{});
+                    const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<int> batch_upsert_from(
         const std::vector<std::string> &keys,
         const std::vector<void *> &buffers, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert_parts(const std::string &key,
                      std::vector<std::span<const char>> values,
-                     const ReplicateConfig &config = ReplicateConfig{});
+                     const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert_batch(const std::vector<std::string> &keys,
                      const std::vector<std::span<const char>> &values,
-                     const ReplicateConfig &config = ReplicateConfig{});
+                     const ReplicateConfig &config = ManagedReplicateConfig());
 
     [[nodiscard]] std::string get_hostname() const;
 

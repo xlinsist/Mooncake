@@ -186,7 +186,7 @@ TEST_F(RealClientTest, PinnedSsdRestoreReadsNonTailRangeIntoGpu) {
         source[i] = static_cast<char>(i % 251);
     }
     const std::string key = "pinned_ssd_non_tail_range";
-    ASSERT_EQ(py_client_->put(key, source), 0);
+    ASSERT_EQ(py_client_->put(key, source, ManagedReplicateConfig()), 0);
 
     bool disk_ready = false;
     const auto offload_deadline =
@@ -1056,6 +1056,51 @@ TEST_F(RealClientTest, TestPutGetSessionRanges) {
     ASSERT_EQ(py_client_->unregister_buffer(dst_data.data()), 0);
 }
 
+TEST_F(RealClientTest, SessionRangesReadManagedDirectLocalReplica) {
+    ScopedEnvVar policy("MC_HETERO_STORAGE_POLICY", "local_only");
+    char path[] = "/tmp/mooncake_direct_local_session_XXXXXX";
+    ASSERT_NE(mkdtemp(path), nullptr);
+    ssd_path_ = path;
+
+    ASSERT_TRUE(master_.Start(
+        InProcMasterConfigBuilder().set_enable_offload(true).build()))
+        << "Failed to start in-proc master";
+    master_address_ = master_.master_address();
+    ASSERT_EQ(
+        py_client_->setup_real("localhost:17815", "P2PHANDSHAKE",
+                               16 * 1024 * 1024, 16 * 1024 * 1024, "tcp", "",
+                               master_address_, nullptr, "", true, ssd_path_),
+        0);
+
+    constexpr size_t kObjectSize = 256;
+    constexpr size_t kRangeOffset = 37;
+    constexpr size_t kRangeSize = 91;
+    const std::string key = "managed_direct_local_session";
+    std::string source(kObjectSize, '\0');
+    for (size_t i = 0; i < source.size(); ++i) {
+        source[i] = static_cast<char>('a' + (i % 26));
+    }
+    ASSERT_EQ(py_client_->put(key, source), 0);
+
+    auto replicas = py_client_->get_replica_desc(key);
+    ASSERT_EQ(replicas.size(), 1);
+    ASSERT_TRUE(replicas.front().is_local_disk_replica());
+
+    std::string destination(kRangeSize, '\0');
+    ASSERT_EQ(
+        py_client_->register_buffer(destination.data(), destination.size()), 0);
+    ASSERT_EQ(py_client_->batch_get_session_start({key})[0], 0);
+    auto result = py_client_->batch_get_into_multi_buffer_ranges(
+        {key}, {{destination.data()}}, {{kRangeSize}}, {{kRangeOffset}});
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0], static_cast<int>(kRangeSize));
+    EXPECT_EQ(destination, source.substr(kRangeOffset, kRangeSize));
+    EXPECT_EQ(py_client_->batch_get_session_end({key}), 0);
+    EXPECT_EQ(py_client_->unregister_buffer(destination.data()), 0);
+    EXPECT_EQ(py_client_->remove(key, true), 0);
+    EXPECT_TRUE(py_client_->get_replica_desc(key).empty());
+}
+
 // Abnormal put/get session cases. See check table in PR / review notes.
 TEST_F(RealClientTest, TestPutGetSessionAbnormal) {
     ASSERT_TRUE(master_.Start(InProcMasterConfigBuilder().build()))
@@ -1273,6 +1318,19 @@ TEST_F(RealClientTest, TestPutSessionStartRejectsReliableNofConfig) {
 
     auto rcs =
         py_client_->batch_put_session_start({"reliable_nof"}, {128}, config);
+    ASSERT_EQ(rcs.size(), 1u);
+    EXPECT_EQ(rcs[0], kInvalidParams);
+}
+
+TEST_F(RealClientTest, TestPutSessionStartRejectsLocalDiskConfig) {
+    const int kInvalidParams =
+        static_cast<int>(toInt(ErrorCode::INVALID_PARAMS));
+    ReplicateConfig config;
+    config.replica_num = 0;
+    config.local_replica_num = 1;
+
+    auto rcs =
+        py_client_->batch_put_session_start({"local_session"}, {128}, config);
     ASSERT_EQ(rcs.size(), 1u);
     EXPECT_EQ(rcs[0], kInvalidParams);
 }

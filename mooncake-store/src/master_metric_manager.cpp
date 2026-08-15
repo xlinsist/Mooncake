@@ -168,6 +168,16 @@ MasterMetricManager::MasterMetricManager()
           "master_nof_heartbeat_probe_latency_ms",
           "Latency distribution of NoF heartbeat probes in milliseconds",
           {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000}),
+      placement_decision_total_(
+          "placement_decision_total",
+          "Total number of managed heterogeneous storage placement decisions",
+          {"policy", "target", "result"}),
+      placement_decision_latency_us_(
+          "placement_decision_latency_us",
+          "Latency distribution of managed placement decisions in microseconds",
+          {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000}),
+      storage_remove_total_("storage_remove_total", "Storage remove operations",
+                            {"target", "result"}),
 
       // Initialize Batch Request Counters
       batch_exist_key_requests_(
@@ -1050,6 +1060,24 @@ void MasterMetricManager::observe_nof_heartbeat_probe_latency_ms(
     nof_heartbeat_probe_latency_ms_.observe(latency_ms);
 }
 
+void MasterMetricManager::inc_placement_decision(const std::string& policy,
+                                                 const std::string& target,
+                                                 const std::string& result,
+                                                 int64_t val) {
+    placement_decision_total_.inc({policy, target, result}, val);
+}
+
+void MasterMetricManager::observe_placement_decision_latency_us(
+    int64_t latency_us) {
+    placement_decision_latency_us_.observe(latency_us);
+}
+
+void MasterMetricManager::inc_storage_remove(const std::string& target,
+                                             const std::string& result,
+                                             int64_t val) {
+    storage_remove_total_.inc({target, result}, val);
+}
+
 // Batch Operation Statistics (Counters)
 void MasterMetricManager::inc_batch_exist_key_requests(int64_t items) {
     batch_exist_key_requests_.inc(1);
@@ -1856,6 +1884,9 @@ std::string MasterMetricManager::serialize_metrics() {
     serialize_metric(nof_heartbeat_timeout_total_);
     serialize_metric(nof_segments_unmounted_by_heartbeat_total_);
     serialize_metric(nof_heartbeat_probe_latency_ms_);
+    serialize_metric(placement_decision_total_);
+    serialize_metric(placement_decision_latency_us_);
+    serialize_metric(storage_remove_total_);
 
     // Serialize CopyStart, CopyEnd, CopyRevoke, MoveStart, MoveEnd, MoveRevoke
     // Counters
@@ -2329,7 +2360,7 @@ std::string MasterMetricManager::get_summary_string(
         }
     }
 
-    auto delta = [&](int64_t SummaryCounters::* field) {
+    auto delta = [&](int64_t SummaryCounters::*field) {
         if (!has_previous_summary) {
             return int64_t{0};
         }
@@ -2581,37 +2612,32 @@ std::string MasterMetricManager::get_summary_string(
     // Eviction counters are cumulative. Request counters above are reported as
     // window rates, but eviction totals are used to track long-running pressure
     // and should not reset after each admin metrics snapshot.
-    ss << " | Eviction: "
-       << "Success/Attempts=" << eviction_success << "/" << eviction_attempts
-       << ", "
+    ss << " | Eviction: " << "Success/Attempts=" << eviction_success << "/"
+       << eviction_attempts << ", "
        << "AllocFail=" << delta(&SummaryCounters::put_start_alloc_fails) << ", "
        << "PartialAlloc=" << delta(&SummaryCounters::put_start_partial_allocs)
-       << ", "
-       << "keys=" << evicted_key_count << ", "
+       << ", " << "keys=" << evicted_key_count << ", "
        << "size=" << byte_size_to_string(evicted_size);
     // mem eviction
-    ss << " | Mem Eviction: "
-       << "Success/Attempts=" << mem_eviction_success << "/"
-       << mem_eviction_attempts << ", "
+    ss << " | Mem Eviction: " << "Success/Attempts=" << mem_eviction_success
+       << "/" << mem_eviction_attempts << ", "
        << "keys=" << mem_evicted_key_count << ", "
        << "size=" << byte_size_to_string(mem_evicted_size);
     // nof eviction
-    ss << " | NoF Eviction: "
-       << "Success/Attempts=" << nof_eviction_success << "/"
-       << nof_eviction_attempts << ", "
+    ss << " | NoF Eviction: " << "Success/Attempts=" << nof_eviction_success
+       << "/" << nof_eviction_attempts << ", "
        << "keys=" << nof_evicted_key_count << ", "
        << "size=" << byte_size_to_string(nof_evicted_size);
 
     // Discard summary
-    ss << " | Discard: "
-       << "Released/Total=" << put_start_release_cnt << "/"
+    ss << " | Discard: " << "Released/Total=" << put_start_release_cnt << "/"
        << put_start_discard_cnt << ", StagingSize="
        << byte_size_to_string(put_start_discarded_staging_size);
 
     // Promotion-on-hit summary (counters are cumulative, not deltas; the
     // gauge is current-state).
-    ss << " | Promotion: "
-       << "in_flight=" << promotion_in_flight_metric_.value() << ", "
+    ss << " | Promotion: " << "in_flight="
+       << promotion_in_flight_metric_.value() << ", "
        << "admitted=" << promotion_admitted_.value() << ", "
        << "completed=" << promotion_completed_.value() << ", "
        << "failed=" << promotion_failed_.value() << ", "
@@ -2624,8 +2650,7 @@ std::string MasterMetricManager::get_summary_string(
        << promotion_rejected_cap_.value();
 
     // Snapshot summary
-    ss << " | Snapshots: "
-       << "Success=" << snapshot_success_.value() << ", "
+    ss << " | Snapshots: " << "Success=" << snapshot_success_.value() << ", "
        << "Fail=" << snapshot_fail_.value();
 
     return ss.str();

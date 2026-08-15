@@ -273,6 +273,12 @@ class NoFSegmentManager;
  */
 class ScopedNoFSegmentAccess {
    public:
+    struct AllocatorReplacement {
+        UUID segment_id;
+        std::shared_ptr<BufferAllocatorBase> expected;
+        std::shared_ptr<BufferAllocatorBase> replacement;
+    };
+
     /**
      * @brief Acquires a lock on the segment mutex
      * @param mutex Reference to the segment mutex
@@ -294,6 +300,14 @@ class ScopedNoFSegmentAccess {
      */
     ErrorCode ReMountSegment(const std::vector<NoFSegment>& segments,
                              const UUID& client_id);
+
+    bool GetSegment(const UUID& segment_id, NoFSegment& segment) const;
+
+    std::shared_ptr<BufferAllocatorBase> GetAllocator(
+        const UUID& segment_id) const;
+
+    bool ReplaceAllocators(
+        const std::vector<AllocatorReplacement>& replacements);
 
     /**
      * @brief Prepare to unmount a segment by deleting its allocator
@@ -483,6 +497,11 @@ class SegmentManager {
     ScopedLocalDiskSegmentAccess getLocalDiskSegmentAccess() {
         return ScopedLocalDiskSegmentAccess(
             client_by_name_, client_local_disk_segment_, segment_mutex_);
+    }
+
+    bool HasLocalDiskSegment(const UUID& client_id) const {
+        std::shared_lock<std::shared_mutex> lock(segment_mutex_);
+        return client_local_disk_segment_.contains(client_id);
     }
 
     SegmentView getView() const { return SegmentView(this); }

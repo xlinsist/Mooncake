@@ -756,9 +756,9 @@ SegmentSerializer::Serialize() {
         }
         std::sort(sorted_keys.begin(), sorted_keys.end());
 
-        // Trailing ssd_total_capacity_bytes so a restored master keeps the
-        // client-reported SSD capacity across a snapshot restore (#2783).
-        packer.pack_array(2 + sorted_keys.size() * 2 + 1);
+        // Trailing capacity and usage keep admission accounting intact across
+        // a snapshot restore. New fields are append-only for compatibility.
+        packer.pack_array(2 + sorted_keys.size() * 2 + 2);
         packer.pack(segment->enable_offloading);
         packer.pack(static_cast<uint64_t>(sorted_keys.size()));
 
@@ -771,6 +771,8 @@ SegmentSerializer::Serialize() {
             packer.pack(task.size);
         }
         packer.pack(segment->ssd_total_capacity_bytes);
+        packer.pack(
+            segment->ssd_used_bytes.load(std::memory_order_relaxed));
     }
 
     // Compress entire data
@@ -1178,6 +1180,16 @@ tl::expected<void, SerializationError> SegmentSerializer::Deserialize(
                     client_value.via.array.ptr[capacity_idx].as<int64_t>();
             }
 
+            // Usage was appended after capacity. Older snapshots omit it and
+            // retain the zero default until backend rebind reconstructs it.
+            size_t used_idx = capacity_idx + 1;
+            if (client_value.via.array.size > used_idx &&
+                IsMsgpackInteger(client_value.via.array.ptr[used_idx])) {
+                segment->ssd_used_bytes.store(
+                    client_value.via.array.ptr[used_idx].as<int64_t>(),
+                    std::memory_order_relaxed);
+            }
+
             segment_manager_->client_local_disk_segment_[client_id] =
                 std::move(segment);
         }
@@ -1401,8 +1413,9 @@ ErrorCode ScopedNoFSegmentAccess::ReMountSegment(
             return err;
         }
         if (err == ErrorCode::INVALID_PARAMS) {
-            LOG(WARNING) << "NoF segment remount: segment_name=" << segment.name
-                         << ", warn=invalid_params";
+            LOG(ERROR) << "NoF segment remount: segment_name=" << segment.name
+                       << ", error=invalid_params";
+            return err;
         } else if (err == ErrorCode::SEGMENT_ALREADY_EXISTS) {
             LOG(WARNING) << "NoF segment remount: segment_name=" << segment.name
                          << ", warn=segment_already_exists";
@@ -1413,6 +1426,51 @@ ErrorCode ScopedNoFSegmentAccess::ReMountSegment(
     }
 
     return ErrorCode::OK;
+}
+
+bool ScopedNoFSegmentAccess::GetSegment(const UUID& segment_id,
+                                        NoFSegment& segment) const {
+    auto mounted = nof_segment_manager_->mounted_segments_.find(segment_id);
+    if (mounted == nof_segment_manager_->mounted_segments_.end()) {
+        return false;
+    }
+    segment = mounted->second.segment;
+    return true;
+}
+
+std::shared_ptr<BufferAllocatorBase> ScopedNoFSegmentAccess::GetAllocator(
+    const UUID& segment_id) const {
+    auto mounted = nof_segment_manager_->mounted_segments_.find(segment_id);
+    return mounted == nof_segment_manager_->mounted_segments_.end()
+               ? nullptr
+               : mounted->second.buf_allocator;
+}
+
+bool ScopedNoFSegmentAccess::ReplaceAllocators(
+    const std::vector<AllocatorReplacement>& replacements) {
+    std::vector<AllocatorManager::Replacement> manager_replacements;
+    manager_replacements.reserve(replacements.size());
+    for (const auto& replacement : replacements) {
+        auto mounted =
+            nof_segment_manager_->mounted_segments_.find(replacement.segment_id);
+        if (mounted == nof_segment_manager_->mounted_segments_.end() ||
+            mounted->second.buf_allocator != replacement.expected ||
+            !replacement.replacement) {
+            return false;
+        }
+        manager_replacements.push_back({mounted->second.segment.name,
+                                        replacement.expected,
+                                        replacement.replacement});
+    }
+    if (!nof_segment_manager_->allocator_manager_.replaceAllocators(
+            manager_replacements)) {
+        return false;
+    }
+    for (const auto& replacement : replacements) {
+        nof_segment_manager_->mounted_segments_.at(replacement.segment_id)
+            .buf_allocator = replacement.replacement;
+    }
+    return true;
 }
 
 ErrorCode ScopedNoFSegmentAccess::PrepareUnmountSegment(

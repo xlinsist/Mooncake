@@ -157,6 +157,18 @@ struct OffloadMetadata {
         : total_keys(keys), total_size(size) {}
 };
 
+struct LocalObjectLocator {
+    std::string backend_id;
+    std::string locator;
+    uint64_t object_size = 0;
+    uint64_t generation = 1;
+};
+
+struct StagedLocalObject {
+    LocalObjectLocator committed;
+    std::string staging_locator;
+};
+
 enum class FileMode { Read, Write };
 
 enum class StorageBackendType {
@@ -404,6 +416,39 @@ class StorageBackendInterface {
     // clean up physical SSD files alongside master metadata deletion.
     virtual void RemoveAll() {}
 
+    virtual tl::expected<std::string, ErrorCode> GetBackendId() const {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    virtual tl::expected<uint64_t, ErrorCode> GetCapacityBytes() const {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    virtual tl::expected<StagedLocalObject, ErrorCode> StageObject(
+        const std::string& /* key */, const std::vector<Slice>& /* slices */) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    virtual tl::expected<LocalObjectLocator, ErrorCode> CommitObject(
+        const StagedLocalObject& /* staged */) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    virtual tl::expected<void, ErrorCode> AbortObject(
+        const StagedLocalObject& /* staged */) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    virtual tl::expected<void, ErrorCode> LoadObject(
+        const LocalObjectLocator& /* locator */, Slice /* destination */) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    virtual tl::expected<void, ErrorCode> RemoveObject(
+        const LocalObjectLocator& /* locator */) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
     virtual tl::expected<std::vector<std::string>, ErrorCode>
     EvictAboveDiskWatermark(double /* high_watermark_ratio */,
                             double /* low_watermark_ratio */,
@@ -506,6 +551,8 @@ class StorageBackend {
      */
     tl::expected<void, ErrorCode> Init(uint64_t quota_bytes);
 
+    uint64_t GetTotalSpace() const;
+
     /**
      * @brief Evict files for satisfying quota limitation
      * @return bool indicating whether quota is satisfied
@@ -522,6 +569,22 @@ class StorageBackend {
         const std::string& path, const std::vector<Slice>& slices,
         const std::string& key = "",
         StorageBackendInterface::EvictionHandler eviction_handler = nullptr);
+
+    struct StagedWrite {
+        std::string temporary_path;
+        std::string final_path;
+        uint64_t size = 0;
+        std::string key;
+    };
+
+    tl::expected<StagedWrite, ErrorCode> StageObject(
+        const std::string& final_path, std::span<const char> data,
+        const std::string& key = "",
+        StorageBackendInterface::EvictionHandler eviction_handler = nullptr);
+
+    tl::expected<void, ErrorCode> CommitObject(const StagedWrite& staged);
+
+    tl::expected<void, ErrorCode> AbortObject(const StagedWrite& staged);
 
     /**
      * @brief Stores an object from a string
@@ -579,6 +642,8 @@ class StorageBackend {
      * @param path Path to the file to remove
      */
     void RemoveFile(const std::string& path);
+
+    tl::expected<bool, ErrorCode> RemoveFileIdempotent(const std::string& path);
 
     /**
      * @brief Removes objects from the storage backend whose keys match a regex
@@ -804,6 +869,25 @@ class StorageBackendAdaptor : public StorageBackendInterface {
 
     void RemoveAll() override;
 
+    tl::expected<std::string, ErrorCode> GetBackendId() const override;
+
+    tl::expected<uint64_t, ErrorCode> GetCapacityBytes() const override;
+
+    tl::expected<StagedLocalObject, ErrorCode> StageObject(
+        const std::string& key, const std::vector<Slice>& slices) override;
+
+    tl::expected<LocalObjectLocator, ErrorCode> CommitObject(
+        const StagedLocalObject& staged) override;
+
+    tl::expected<void, ErrorCode> AbortObject(
+        const StagedLocalObject& staged) override;
+
+    tl::expected<void, ErrorCode> LoadObject(const LocalObjectLocator& locator,
+                                             Slice destination) override;
+
+    tl::expected<void, ErrorCode> RemoveObject(
+        const LocalObjectLocator& locator) override;
+
     tl::expected<std::vector<std::string>, ErrorCode> EvictAboveDiskWatermark(
         double high_watermark_ratio, double low_watermark_ratio,
         EvictionHandler eviction_handler = nullptr) override;
@@ -819,7 +903,17 @@ class StorageBackendAdaptor : public StorageBackendInterface {
 
     std::unique_ptr<StorageBackend> storage_backend_;
 
+    std::string backend_id_;
+
+    std::unordered_map<std::string, StorageBackend::StagedWrite> staged_writes_
+        GUARDED_BY(mutex_);
+
     static std::string ConcatSlicesToString(const std::vector<Slice>& slices);
+
+    tl::expected<void, ErrorCode> InitBackendIdentity();
+
+    tl::expected<std::string, ErrorCode> ResolveLocatorPath(
+        const std::string& locator) const;
 
     mutable Mutex mutex_;
 

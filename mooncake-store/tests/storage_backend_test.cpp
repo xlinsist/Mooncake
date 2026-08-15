@@ -788,6 +788,247 @@ TEST_F(StorageBackendTest, AdaptorBatchOffloadAndBatchLoad) {
     }
 }
 
+TEST_F(StorageBackendTest, FilePerKeyDirectLifecycleIsAtomicAndRecoverable) {
+    FileStorageConfig cfg;
+    cfg.storage_filepath = data_path;
+    FilePerKeyConfig file_per_key_config;
+    file_per_key_config.fsdir = "file_per_key_direct_lifecycle";
+    file_per_key_config.enable_eviction = false;
+
+    std::string value = "direct-local-value";
+    std::string backend_id;
+    LocalObjectLocator committed;
+    {
+        StorageBackendAdaptor adaptor(cfg, file_per_key_config);
+        ASSERT_TRUE(adaptor.Init());
+        auto id = adaptor.GetBackendId();
+        ASSERT_TRUE(id);
+        ASSERT_FALSE(id->empty());
+        backend_id = id.value();
+
+        std::vector<Slice> slices{{value.data(), value.size()}};
+        auto staged = adaptor.StageObject("direct-key", slices);
+        ASSERT_TRUE(staged);
+        EXPECT_EQ(staged->committed.backend_id, backend_id);
+        EXPECT_EQ(staged->committed.object_size, value.size());
+
+        auto exists_before_commit = adaptor.IsExist("direct-key");
+        ASSERT_TRUE(exists_before_commit);
+        EXPECT_FALSE(exists_before_commit.value());
+
+        auto commit_result = adaptor.CommitObject(staged.value());
+        ASSERT_TRUE(commit_result);
+        EXPECT_EQ(commit_result->locator, staged->committed.locator);
+        committed = commit_result.value();
+    }
+
+    StorageBackendAdaptor restarted(cfg, file_per_key_config);
+    ASSERT_TRUE(restarted.Init());
+    auto restarted_id = restarted.GetBackendId();
+    ASSERT_TRUE(restarted_id);
+    EXPECT_EQ(restarted_id.value(), backend_id);
+
+    std::string loaded(value.size(), '\0');
+    ASSERT_TRUE(
+        restarted.LoadObject(committed, Slice{loaded.data(), loaded.size()}));
+    EXPECT_EQ(loaded, value);
+
+    ASSERT_TRUE(restarted.RemoveObject(committed));
+    ASSERT_TRUE(restarted.RemoveObject(committed));
+    auto exists_after_remove = restarted.IsExist("direct-key");
+    ASSERT_TRUE(exists_after_remove);
+    EXPECT_FALSE(exists_after_remove.value());
+}
+
+TEST_F(StorageBackendTest, FilePerKeyDirectAbortLeavesNoPublishedObject) {
+    FileStorageConfig cfg;
+    cfg.storage_filepath = data_path;
+    FilePerKeyConfig file_per_key_config;
+    file_per_key_config.fsdir = "file_per_key_direct_abort";
+    file_per_key_config.enable_eviction = false;
+
+    StorageBackendAdaptor adaptor(cfg, file_per_key_config);
+    ASSERT_TRUE(adaptor.Init());
+    std::string value = "aborted-value";
+    auto staged = adaptor.StageObject(
+        "aborted-key", std::vector<Slice>{{value.data(), value.size()}});
+    ASSERT_TRUE(staged);
+    ASSERT_TRUE(adaptor.AbortObject(staged.value()));
+    ASSERT_TRUE(adaptor.AbortObject(staged.value()));
+
+    auto exists = adaptor.IsExist("aborted-key");
+    ASSERT_TRUE(exists);
+    EXPECT_FALSE(exists.value());
+
+    const fs::path root =
+        fs::path(cfg.storage_filepath) / file_per_key_config.fsdir;
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+        EXPECT_EQ(entry.path().filename().string().find(".tmp."),
+                  std::string::npos);
+    }
+}
+
+TEST_F(StorageBackendTest,
+       FilePerKeyDirectQuotaRejectsWithoutEvictionAndSurvivesRestart) {
+    FileStorageConfig cfg;
+    cfg.storage_filepath = data_path;
+    cfg.total_size_limit = 128;
+    FilePerKeyConfig file_per_key_config;
+    file_per_key_config.fsdir = "file_per_key_direct_quota";
+    file_per_key_config.enable_eviction = false;
+
+    LocalObjectLocator committed;
+    {
+        StorageBackendAdaptor adaptor(cfg, file_per_key_config);
+        ASSERT_TRUE(adaptor.Init());
+        ASSERT_TRUE(adaptor.GetCapacityBytes());
+        EXPECT_EQ(*adaptor.GetCapacityBytes(), cfg.total_size_limit);
+        std::string value(64, 'a');
+        auto staged = adaptor.StageObject(
+            "first", std::vector<Slice>{{value.data(), value.size()}});
+        ASSERT_TRUE(staged);
+        auto commit = adaptor.CommitObject(*staged);
+        ASSERT_TRUE(commit);
+        committed = *commit;
+
+        std::string overflow(128, 'b');
+        EXPECT_EQ(
+            adaptor
+                .StageObject("overflow", {{overflow.data(), overflow.size()}})
+                .error(),
+            ErrorCode::FILE_WRITE_FAIL);
+    }
+
+    StorageBackendAdaptor restarted(cfg, file_per_key_config);
+    ASSERT_TRUE(restarted.Init());
+    std::string overflow(128, 'c');
+    EXPECT_EQ(restarted
+                  .StageObject("overflow-after-restart",
+                               {{overflow.data(), overflow.size()}})
+                  .error(),
+              ErrorCode::FILE_WRITE_FAIL);
+
+    ASSERT_TRUE(restarted.RemoveObject(committed));
+    std::string replacement(64, 'd');
+    auto staged = restarted.StageObject(
+        "replacement",
+        std::vector<Slice>{{replacement.data(), replacement.size()}});
+    ASSERT_TRUE(staged);
+    ASSERT_TRUE(restarted.AbortObject(*staged));
+}
+
+TEST_F(StorageBackendTest, FilePerKeyDirectReportsDefaultFilesystemCapacity) {
+    FileStorageConfig cfg;
+    cfg.storage_filepath = data_path;
+    cfg.total_size_limit = 0;
+    FilePerKeyConfig file_per_key_config;
+    file_per_key_config.fsdir = "file_per_key_default_capacity";
+    file_per_key_config.enable_eviction = false;
+
+    StorageBackendAdaptor adaptor(cfg, file_per_key_config);
+    ASSERT_TRUE(adaptor.Init());
+    auto capacity = adaptor.GetCapacityBytes();
+    ASSERT_TRUE(capacity);
+
+    std::error_code error;
+    const auto space = fs::space(
+        fs::path(cfg.storage_filepath) / file_per_key_config.fsdir, error);
+    ASSERT_FALSE(error);
+    EXPECT_EQ(*capacity, static_cast<uint64_t>(space.capacity * 0.9));
+}
+
+TEST_F(StorageBackendTest,
+       FilePerKeyDirectRemoveAllIsScopedAndPreservesBackendIdentity) {
+    FileStorageConfig cfg;
+    cfg.storage_filepath = data_path;
+    cfg.total_size_limit = 128;
+    FilePerKeyConfig file_per_key_config;
+    file_per_key_config.fsdir = "file_per_key_direct_remove_all";
+    file_per_key_config.enable_eviction = false;
+
+    const fs::path unrelated = fs::path(data_path) / "unrelated.txt";
+    {
+        std::ofstream output(unrelated);
+        output << "keep";
+    }
+
+    StorageBackendAdaptor adaptor(cfg, file_per_key_config);
+    ASSERT_TRUE(adaptor.Init());
+    const auto backend_id = adaptor.GetBackendId();
+    ASSERT_TRUE(backend_id);
+    std::string value(64, 'a');
+    auto staged = adaptor.StageObject(
+        "first", std::vector<Slice>{{value.data(), value.size()}});
+    ASSERT_TRUE(staged);
+    auto committed = adaptor.CommitObject(*staged);
+    ASSERT_TRUE(committed);
+
+    adaptor.RemoveAll();
+    EXPECT_TRUE(fs::exists(unrelated));
+    std::string loaded(value.size(), '\0');
+    EXPECT_FALSE(
+        adaptor.LoadObject(*committed, Slice{loaded.data(), loaded.size()}));
+
+    std::string replacement(64, 'b');
+    auto replacement_stage = adaptor.StageObject(
+        "replacement",
+        std::vector<Slice>{{replacement.data(), replacement.size()}});
+    ASSERT_TRUE(replacement_stage);
+    ASSERT_TRUE(adaptor.AbortObject(*replacement_stage));
+
+    StorageBackendAdaptor restarted(cfg, file_per_key_config);
+    ASSERT_TRUE(restarted.Init());
+    EXPECT_EQ(restarted.GetBackendId(), backend_id);
+}
+
+TEST_F(StorageBackendTest, FilePerKeyDirectVersionsUseOpaqueLocators) {
+    FileStorageConfig cfg;
+    cfg.storage_filepath = data_path;
+    FilePerKeyConfig file_per_key_config;
+    file_per_key_config.fsdir = "file_per_key_direct_versions";
+    file_per_key_config.enable_eviction = false;
+
+    StorageBackendAdaptor adaptor(cfg, file_per_key_config);
+    ASSERT_TRUE(adaptor.Init());
+    std::string first = "first-version";
+    std::string second = "second-version";
+    auto first_staged = adaptor.StageObject(
+        "same-key", std::vector<Slice>{{first.data(), first.size()}});
+    auto second_staged = adaptor.StageObject(
+        "same-key", std::vector<Slice>{{second.data(), second.size()}});
+    ASSERT_TRUE(first_staged);
+    ASSERT_TRUE(second_staged);
+    auto first_locator = adaptor.CommitObject(first_staged.value());
+    auto second_locator = adaptor.CommitObject(second_staged.value());
+    ASSERT_TRUE(first_locator);
+    ASSERT_TRUE(second_locator);
+    EXPECT_NE(first_locator->locator, second_locator->locator);
+
+    std::string first_loaded(first.size(), '\0');
+    std::string second_loaded(second.size(), '\0');
+    ASSERT_TRUE(
+        adaptor.LoadObject(first_locator.value(),
+                           Slice{first_loaded.data(), first_loaded.size()}));
+    ASSERT_TRUE(
+        adaptor.LoadObject(second_locator.value(),
+                           Slice{second_loaded.data(), second_loaded.size()}));
+    EXPECT_EQ(first_loaded, first);
+    EXPECT_EQ(second_loaded, second);
+
+    auto stale_generation = first_locator.value();
+    stale_generation.generation++;
+    auto stale_read = adaptor.LoadObject(
+        stale_generation, Slice{first_loaded.data(), first_loaded.size()});
+    ASSERT_FALSE(stale_read);
+    EXPECT_EQ(stale_read.error(), ErrorCode::INVALID_PARAMS);
+
+    ASSERT_TRUE(adaptor.RemoveObject(first_locator.value()));
+    ASSERT_TRUE(
+        adaptor.LoadObject(second_locator.value(),
+                           Slice{second_loaded.data(), second_loaded.size()}));
+    EXPECT_EQ(second_loaded, second);
+}
+
 TEST_F(StorageBackendTest, AdaptorBatchOffload_PartialSuccess) {
     FileStorageConfig cfg;
     cfg.storage_filepath = data_path;

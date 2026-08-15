@@ -68,8 +68,18 @@ struct RpcNameTraits<&WrappedMasterService::PutStart> {
 };
 
 template <>
+struct RpcNameTraits<&WrappedMasterService::PutStartManaged> {
+    static constexpr const char* value = "PutStartManaged";
+};
+
+template <>
 struct RpcNameTraits<&WrappedMasterService::BatchPutStart> {
     static constexpr const char* value = "BatchPutStart";
+};
+
+template <>
+struct RpcNameTraits<&WrappedMasterService::BatchPutStartManaged> {
+    static constexpr const char* value = "BatchPutStartManaged";
 };
 
 template <>
@@ -78,8 +88,18 @@ struct RpcNameTraits<&WrappedMasterService::PutEnd> {
 };
 
 template <>
+struct RpcNameTraits<&WrappedMasterService::PutEndPlacement> {
+    static constexpr const char* value = "PutEndPlacement";
+};
+
+template <>
 struct RpcNameTraits<&WrappedMasterService::BatchPutEnd> {
     static constexpr const char* value = "BatchPutEnd";
+};
+
+template <>
+struct RpcNameTraits<&WrappedMasterService::BatchPutEndPlacement> {
+    static constexpr const char* value = "BatchPutEndPlacement";
 };
 
 template <>
@@ -98,8 +118,18 @@ struct RpcNameTraits<&WrappedMasterService::UpsertStart> {
 };
 
 template <>
+struct RpcNameTraits<&WrappedMasterService::UpsertStartManaged> {
+    static constexpr const char* value = "UpsertStartManaged";
+};
+
+template <>
 struct RpcNameTraits<&WrappedMasterService::BatchUpsertStart> {
     static constexpr const char* value = "BatchUpsertStart";
+};
+
+template <>
+struct RpcNameTraits<&WrappedMasterService::BatchUpsertStartManaged> {
+    static constexpr const char* value = "BatchUpsertStartManaged";
 };
 
 template <>
@@ -108,8 +138,18 @@ struct RpcNameTraits<&WrappedMasterService::UpsertEnd> {
 };
 
 template <>
+struct RpcNameTraits<&WrappedMasterService::UpsertEndPlacement> {
+    static constexpr const char* value = "UpsertEndPlacement";
+};
+
+template <>
 struct RpcNameTraits<&WrappedMasterService::BatchUpsertEnd> {
     static constexpr const char* value = "BatchUpsertEnd";
+};
+
+template <>
+struct RpcNameTraits<&WrappedMasterService::BatchUpsertEndPlacement> {
+    static constexpr const char* value = "BatchUpsertEndPlacement";
 };
 
 template <>
@@ -213,8 +253,23 @@ struct RpcNameTraits<&WrappedMasterService::ServiceReady> {
 };
 
 template <>
+struct RpcNameTraits<&WrappedMasterService::PollLocalDiskRemovals> {
+    static constexpr const char* value = "PollLocalDiskRemovals";
+};
+
+template <>
+struct RpcNameTraits<&WrappedMasterService::AckLocalDiskRemoval> {
+    static constexpr const char* value = "AckLocalDiskRemoval";
+};
+
+template <>
 struct RpcNameTraits<&WrappedMasterService::MountLocalDiskSegment> {
     static constexpr const char* value = "MountLocalDiskSegment";
+};
+
+template <>
+struct RpcNameTraits<&WrappedMasterService::RebindLocalDiskBackend> {
+    static constexpr const char* value = "RebindLocalDiskBackend";
 };
 
 template <>
@@ -569,9 +624,10 @@ MasterClient::PutStart(const std::string& key,
         total_slice_length += slice_length;
     }
 
-    auto result = invoke_rpc<&WrappedMasterService::PutStart,
-                             std::vector<Replica::Descriptor>>(
-        client_id_, key, total_slice_length, config, tenant_id_.value());
+    const ManagedPlacementStartRequest request{
+        client_id_, key, total_slice_length, config, tenant_id_.value()};
+    auto result = invoke_rpc<&WrappedMasterService::PutStartManaged,
+                             std::vector<Replica::Descriptor>>(request);
     timer.LogResponseExpected(result);
     return result;
 }
@@ -594,10 +650,11 @@ MasterClient::BatchPutStart(
         total_slice_lengths.emplace_back(total_slice_length);
     }
 
-    auto result = invoke_batch_rpc<&WrappedMasterService::BatchPutStart,
+    const ManagedPlacementBatchStartRequest request{
+        client_id_, keys, total_slice_lengths, config, tenant_id_.value()};
+    auto result = invoke_batch_rpc<&WrappedMasterService::BatchPutStartManaged,
                                    std::vector<Replica::Descriptor>>(
-        keys.size(), client_id_, keys, total_slice_lengths, config,
-        tenant_id_.value());
+        keys.size(), request);
     timer.LogResponse("result=", result.size(), " operations");
     return result;
 }
@@ -607,8 +664,10 @@ tl::expected<void, ErrorCode> MasterClient::PutEnd(
     ScopedVLogTimer timer(1, "MasterClient::PutEnd");
     timer.LogRequest("key=", object_meta.key);
 
-    auto result = invoke_rpc<&WrappedMasterService::PutEnd, void>(
-        client_id_, object_meta, replica_type, tenant_id_.value());
+    const PlacementEndRequest request{client_id_, object_meta, replica_type,
+                                      tenant_id_.value()};
+    auto result =
+        invoke_rpc<&WrappedMasterService::PutEndPlacement, void>(request);
     timer.LogResponseExpected(result);
     return result;
 }
@@ -618,9 +677,11 @@ std::vector<tl::expected<void, ErrorCode>> MasterClient::BatchPutEnd(
     ScopedVLogTimer timer(1, "MasterClient::BatchPutEnd");
     timer.LogRequest("keys_count=", object_metas.size());
 
-    auto result = invoke_batch_rpc<&WrappedMasterService::BatchPutEnd, void>(
-        object_metas.size(), client_id_, object_metas, replica_type,
-        tenant_id_.value());
+    const PlacementBatchEndRequest request{client_id_, object_metas,
+                                           replica_type, tenant_id_.value()};
+    auto result =
+        invoke_batch_rpc<&WrappedMasterService::BatchPutEndPlacement, void>(
+            object_metas.size(), request);
     timer.LogResponse("result=", result.size(), " operations");
     return result;
 }
@@ -659,9 +720,10 @@ MasterClient::UpsertStart(const std::string& key,
         total_slice_length += slice_length;
     }
 
-    auto result = invoke_rpc<&WrappedMasterService::UpsertStart,
-                             std::vector<Replica::Descriptor>>(
-        client_id_, key, total_slice_length, config, tenant_id_.value());
+    const ManagedPlacementStartRequest request{
+        client_id_, key, total_slice_length, config, tenant_id_.value()};
+    auto result = invoke_rpc<&WrappedMasterService::UpsertStartManaged,
+                             std::vector<Replica::Descriptor>>(request);
     timer.LogResponseExpected(result);
     return result;
 }
@@ -684,10 +746,12 @@ MasterClient::BatchUpsertStart(
         total_slice_lengths.emplace_back(total);
     }
 
-    auto result = invoke_batch_rpc<&WrappedMasterService::BatchUpsertStart,
-                                   std::vector<Replica::Descriptor>>(
-        keys.size(), client_id_, keys, total_slice_lengths, config,
-        tenant_id_.value());
+    const ManagedPlacementBatchStartRequest request{
+        client_id_, keys, total_slice_lengths, config, tenant_id_.value()};
+    auto result =
+        invoke_batch_rpc<&WrappedMasterService::BatchUpsertStartManaged,
+                         std::vector<Replica::Descriptor>>(keys.size(),
+                                                           request);
     timer.LogResponse("result=", result.size(), " operations");
     return result;
 }
@@ -697,8 +761,10 @@ tl::expected<void, ErrorCode> MasterClient::UpsertEnd(
     ScopedVLogTimer timer(1, "MasterClient::UpsertEnd");
     timer.LogRequest("key=", object_meta.key);
 
-    auto result = invoke_rpc<&WrappedMasterService::UpsertEnd, void>(
-        client_id_, object_meta, replica_type, tenant_id_.value());
+    const PlacementEndRequest request{client_id_, object_meta, replica_type,
+                                      tenant_id_.value()};
+    auto result =
+        invoke_rpc<&WrappedMasterService::UpsertEndPlacement, void>(request);
     timer.LogResponseExpected(result);
     return result;
 }
@@ -708,8 +774,11 @@ std::vector<tl::expected<void, ErrorCode>> MasterClient::BatchUpsertEnd(
     ScopedVLogTimer timer(1, "MasterClient::BatchUpsertEnd");
     timer.LogRequest("keys_count=", object_metas.size());
 
-    auto result = invoke_batch_rpc<&WrappedMasterService::BatchUpsertEnd, void>(
-        object_metas.size(), client_id_, object_metas, tenant_id_.value());
+    const PlacementBatchEndRequest request{
+        client_id_, object_metas, ReplicaType::ALL, tenant_id_.value()};
+    auto result =
+        invoke_batch_rpc<&WrappedMasterService::BatchUpsertEndPlacement, void>(
+            object_metas.size(), request);
     timer.LogResponse("result=", result.size(), " operations");
     return result;
 }
@@ -778,6 +847,18 @@ std::vector<tl::expected<void, ErrorCode>> MasterClient::BatchRemove(
         keys.size(), keys, force, tenant_id_.value());
     timer.LogResponse("result=", result.size(), " operations");
     return result;
+}
+
+tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>
+MasterClient::PollLocalDiskRemovals() {
+    return invoke_rpc<&WrappedMasterService::PollLocalDiskRemovals,
+                      std::vector<LocalDiskRemoval>>(client_id_);
+}
+
+tl::expected<void, ErrorCode> MasterClient::AckLocalDiskRemoval(
+    const std::string& key, bool success, const std::string& tenant_id) {
+    return invoke_rpc<&WrappedMasterService::AckLocalDiskRemoval, void>(
+        client_id_, key, success, tenant_id);
 }
 
 tl::expected<void, ErrorCode> MasterClient::MountSegment(
@@ -940,6 +1021,12 @@ tl::expected<void, ErrorCode> MasterClient::MountLocalDiskSegment(
             client_id, enable_offloading);
     timer.LogResponseExpected(result);
     return result;
+}
+
+tl::expected<long, ErrorCode> MasterClient::RebindLocalDiskBackend(
+    const std::string& backend_id, const std::string& transport_endpoint) {
+    return invoke_rpc<&WrappedMasterService::RebindLocalDiskBackend, long>(
+        client_id_, backend_id, transport_endpoint);
 }
 
 tl::expected<UUID, ErrorCode> MasterClient::CreateCopyTask(

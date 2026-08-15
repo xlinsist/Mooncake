@@ -1,4 +1,5 @@
 #include "segment.h"
+#include "utils/zstd_util.h"
 
 #include <glog/logging.h>
 #include <gtest/gtest.h>
@@ -140,6 +141,47 @@ class SegmentTest : public ::testing::Test {
         std::vector<UUID> client_ids;
         client_ids.push_back(client_id);
         ValidateMountedLocalDiskSegments(segment_manager, segments, client_ids);
+    }
+
+    void SetLocalDiskAccounting(SegmentManager& segment_manager,
+                                const UUID& client_id, int64_t capacity,
+                                int64_t used) {
+        auto segment =
+            segment_manager.client_local_disk_segment_.at(client_id);
+        segment->ssd_total_capacity_bytes = capacity;
+        segment->ssd_used_bytes.store(used, std::memory_order_relaxed);
+    }
+
+    std::pair<int64_t, int64_t> GetLocalDiskAccounting(
+        const SegmentManager& segment_manager, const UUID& client_id) {
+        const auto& segment =
+            segment_manager.client_local_disk_segment_.at(client_id);
+        return {segment->ssd_total_capacity_bytes,
+                segment->ssd_used_bytes.load(std::memory_order_relaxed)};
+    }
+
+    std::vector<uint8_t> BuildLegacyLocalDiskSnapshot(
+        const UUID& client_id, int64_t capacity) {
+        msgpack::sbuffer buffer;
+        msgpack::packer<msgpack::sbuffer> packer(&buffer);
+        packer.pack_map(5);
+        packer.pack("ma");
+        packer.pack(static_cast<int32_t>(BufferAllocatorType::OFFSET));
+        packer.pack("an");
+        packer.pack_array(0);
+        packer.pack("ms");
+        packer.pack_map(0);
+        packer.pack("cs");
+        packer.pack_map(0);
+        packer.pack("ld");
+        packer.pack_map(1);
+        packer.pack(UuidToString(client_id));
+        packer.pack_array(3);
+        packer.pack(false);
+        packer.pack(uint64_t{0});
+        packer.pack(capacity);
+        return zstd_compress(
+            reinterpret_cast<const uint8_t*>(buffer.data()), buffer.size(), 3);
     }
 };
 
@@ -786,6 +828,33 @@ TEST_F(SegmentTest, MountLocalDiskSegmentDuplicate) {
                                                                segment2};
     std::vector<UUID> client_ids = {client_id, client_id2};
     ValidateMountedLocalDiskSegments(segment_manager, segments, client_ids);
+}
+
+TEST_F(SegmentTest, LocalDiskAccountingSurvivesSnapshotRoundTrip) {
+    const UUID client_id = generate_uuid();
+    SegmentManager source(BufferAllocatorType::OFFSET);
+    ASSERT_EQ(ErrorCode::OK,
+              source.getSegmentAccess().MountLocalDiskSegment(client_id, true));
+    SetLocalDiskAccounting(source, client_id, 8192, 3072);
+
+    auto snapshot = SegmentSerializer(&source).Serialize();
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().message;
+    SegmentManager restored(BufferAllocatorType::OFFSET);
+    ASSERT_TRUE(
+        SegmentSerializer(&restored).Deserialize(snapshot.value()).has_value());
+
+    EXPECT_EQ(std::make_pair(int64_t{8192}, int64_t{3072}),
+              GetLocalDiskAccounting(restored, client_id));
+}
+
+TEST_F(SegmentTest, LegacyLocalDiskSnapshotDefaultsUsedBytesToZero) {
+    const UUID client_id = generate_uuid();
+    SegmentManager restored(BufferAllocatorType::OFFSET);
+    auto snapshot = BuildLegacyLocalDiskSnapshot(client_id, 8192);
+    ASSERT_TRUE(SegmentSerializer(&restored).Deserialize(snapshot).has_value());
+
+    EXPECT_EQ(std::make_pair(int64_t{8192}, int64_t{0}),
+              GetLocalDiskAccounting(restored, client_id));
 }
 
 }  // namespace mooncake

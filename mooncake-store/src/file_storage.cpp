@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "environ.h"
 #include "storage_backend.h"
 #include "client_metric.h"
+#include "crc32c.h"
 #include "utils.h"
 #include "device/accelerator_registry.h"
 #ifdef USE_URING
@@ -307,6 +309,12 @@ FileStorage::FileStorage(const FileStorageConfig& config,
 
     storage_backend_ = create_storage_backend_result.value();
 
+    FilePerKeyConfig direct_backend_config;
+    direct_backend_config.fsdir = "direct_local_objects";
+    direct_backend_config.enable_eviction = false;
+    direct_local_backend_ =
+        std::make_shared<StorageBackendAdaptor>(config_, direct_backend_config);
+
     // Register the client buffer with the process-wide io_uring fixed-buffer
     // mechanism. This must happen before any I/O threads start so that they
     // can lazily pick up the registration on their first I/O call.
@@ -354,6 +362,12 @@ tl::expected<void, ErrorCode> FileStorage::Init() {
                    << init_storage_backend_result.error();
         return init_storage_backend_result;
     }
+    auto init_direct_backend_result = direct_local_backend_->Init();
+    if (!init_direct_backend_result) {
+        LOG(ERROR) << "Failed to init direct local backend: "
+                   << init_direct_backend_result.error();
+        return init_direct_backend_result;
+    }
     auto enable_offloading_result = IsEnableOffloading();
     if (enable_offloading_result.has_value()) {
         LOG(INFO) << "IsEnableOffloading result: "
@@ -378,16 +392,25 @@ tl::expected<void, ErrorCode> FileStorage::Init() {
             return mount_file_storage_result;
         }
     }
-    // Report configured SSD capacity to Master so it can populate
-    // file_total_capacity_ (the denominator in "SSD Storage: X / Y").
-    // Called once at init; old Masters that lack this RPC will log an error
-    // but FileStorage continues normally.
-    if (config_.total_size_limit > 0) {
-        auto cap_result = client_->ReportSsdCapacity(config_.total_size_limit);
+    auto backend_id = GetDirectBackendId();
+    if (!backend_id) {
+        return tl::make_unexpected(backend_id.error());
+    }
+    auto rebind_result =
+        client_->RebindLocalDiskBackend(*backend_id, local_rpc_addr_);
+    if (!rebind_result) {
+        return tl::make_unexpected(rebind_result.error());
+    }
+    auto direct_capacity = direct_local_backend_->GetCapacityBytes();
+    if (direct_capacity) {
+        auto cap_result = client_->ReportSsdCapacity(*direct_capacity);
         if (!cap_result) {
             LOG(WARNING) << "ReportSsdCapacity failed (old Master?): "
                          << cap_result.error();
         }
+    } else {
+        LOG(WARNING) << "Failed to query direct-local backend capacity: "
+                     << direct_capacity.error();
     }
 
     auto scan_meta_result = storage_backend_->ScanMeta(
@@ -428,6 +451,80 @@ tl::expected<void, ErrorCode> FileStorage::Init() {
     client_buffer_gc_thread_ =
         std::thread(&FileStorage::ClientBufferGCThreadFunc, this);
     return {};
+}
+
+tl::expected<std::string, ErrorCode> FileStorage::GetDirectBackendId() const {
+    return direct_local_backend_->GetBackendId();
+}
+
+tl::expected<StagedLocalObject, ErrorCode> FileStorage::StageDirectObject(
+    const std::string& key, const std::vector<Slice>& slices) {
+    std::vector<Slice> host_slices;
+    host_slices.reserve(slices.size());
+    std::vector<PinnedBufferPool::Buffer> staging_buffers;
+    auto accelerators = device::GetAcceleratorRegistry().RuntimeAccelerators();
+    for (const auto& slice : slices) {
+        device::PointerInfo info{};
+        auto* accelerator = accelerators.FindDeviceForPointer(slice.ptr, &info);
+        if (!accelerator) {
+            host_slices.push_back(slice);
+            continue;
+        }
+        accelerator->SetContext(info.device_id);
+        auto buffer = pinned_buffer_pool_->Acquire(slice.size);
+        if (!buffer.data ||
+            !accelerator->Copy(buffer.data, slice.ptr, slice.size,
+                               device::CopyDirection::kDeviceToHost)) {
+            if (buffer.data) {
+                pinned_buffer_pool_->Release(std::move(buffer));
+            }
+            for (auto& staged : staging_buffers) {
+                pinned_buffer_pool_->Release(std::move(staged));
+            }
+            return tl::make_unexpected(ErrorCode::TRANSFER_FAIL);
+        }
+        host_slices.emplace_back(Slice{buffer.data, slice.size});
+        staging_buffers.push_back(std::move(buffer));
+    }
+    auto result = direct_local_backend_->StageObject(key, host_slices);
+    for (auto& buffer : staging_buffers) {
+        pinned_buffer_pool_->Release(std::move(buffer));
+    }
+    return result;
+}
+
+tl::expected<LocalObjectLocator, ErrorCode> FileStorage::CommitDirectObject(
+    const StagedLocalObject& staged) {
+    return direct_local_backend_->CommitObject(staged);
+}
+
+tl::expected<void, ErrorCode> FileStorage::AbortDirectObject(
+    const StagedLocalObject& staged) {
+    return direct_local_backend_->AbortObject(staged);
+}
+
+tl::expected<void, ErrorCode> FileStorage::LoadDirectObject(
+    const LocalObjectLocator& locator, Slice destination) {
+    const auto started = std::chrono::steady_clock::now();
+    auto result = direct_local_backend_->LoadObject(locator, destination);
+    if (client_) {
+        client_->ObserveStorageOperation(
+            "get", "local_nvme", result.has_value(), locator.object_size,
+            elapsed_us_since(started));
+    }
+    return result;
+}
+
+tl::expected<void, ErrorCode> FileStorage::RemoveDirectObject(
+    const LocalObjectLocator& locator) {
+    const auto started = std::chrono::steady_clock::now();
+    auto result = direct_local_backend_->RemoveObject(locator);
+    if (client_) {
+        client_->ObserveStorageOperation(
+            "remove", "local_nvme", result.has_value(), locator.object_size,
+            elapsed_us_since(started));
+    }
+    return result;
 }
 
 tl::expected<std::shared_ptr<FileStorage::AllocatedBatch>, ErrorCode>
@@ -495,6 +592,91 @@ FileStorage::BatchGetLocal(const std::vector<std::string>& keys,
     auto load_result = LoadBatch(keys, sizes, true);
     if (!load_result) return tl::make_unexpected(load_result.error());
 
+    auto batch = std::move(load_result.value());
+    LocalBatchResult result;
+    result.pointers = std::move(batch->pointers);
+    result.owner = std::move(batch);
+    return result;
+}
+
+tl::expected<std::shared_ptr<FileStorage::AllocatedBatch>, ErrorCode>
+FileStorage::LoadLocalDiskObjects(
+    const std::vector<LocalDiskReadRequest>& requests, bool prefer_pinned) {
+    std::vector<std::string> keys;
+    std::vector<int64_t> sizes;
+    keys.reserve(requests.size());
+    sizes.reserve(requests.size());
+    for (const auto& request : requests) {
+        keys.emplace_back(request.storage_key);
+        sizes.emplace_back(request.size);
+    }
+
+    const bool use_pinned = prefer_pinned && pinned_restore_arena_allocator_;
+    auto& allocator = use_pinned ? *pinned_restore_arena_allocator_
+                                 : *client_buffer_allocator_;
+    auto allocate_result = AllocateBatch(keys, sizes, allocator);
+    if (!allocate_result && use_pinned &&
+        allocate_result.error() == ErrorCode::BUFFER_OVERFLOW) {
+        allocate_result = AllocateBatch(keys, sizes, *client_buffer_allocator_);
+    }
+    if (!allocate_result) {
+        return tl::make_unexpected(allocate_result.error());
+    }
+
+    auto batch = std::move(allocate_result.value());
+    std::unordered_map<std::string, Slice> legacy_slices;
+    for (const auto& request : requests) {
+        auto slice_it = batch->slices.find(request.storage_key);
+        if (slice_it == batch->slices.end()) {
+            return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+        }
+        const bool has_locator = request.backend_id.has_value() &&
+                                 request.locator.has_value() &&
+                                 request.object_size.has_value();
+        if (!has_locator) {
+            legacy_slices.emplace(request.storage_key, slice_it->second);
+            continue;
+        }
+        LocalObjectLocator local_object;
+        local_object.backend_id = request.backend_id.value();
+        local_object.locator = request.locator.value();
+        local_object.object_size = request.object_size.value();
+        local_object.generation = request.generation.value_or(1);
+        auto load_result = LoadDirectObject(local_object, slice_it->second);
+        if (!load_result) {
+            return tl::make_unexpected(load_result.error());
+        }
+    }
+    if (!legacy_slices.empty()) {
+        auto load_result = BatchLoad(legacy_slices);
+        if (!load_result) {
+            return tl::make_unexpected(load_result.error());
+        }
+    }
+    for (size_t i = 0; i < requests.size(); ++i) {
+        const auto slice_it = batch->slices.find(requests[i].storage_key);
+        batch->pointers[i] = reinterpret_cast<uintptr_t>(slice_it->second.ptr);
+    }
+    return batch;
+}
+
+tl::expected<FileStorage::BatchGetResult, ErrorCode>
+FileStorage::BatchGetLocalDiskObjects(
+    const std::vector<LocalDiskReadRequest>& requests) {
+    auto load_result = LoadLocalDiskObjects(requests, false);
+    if (!load_result) return tl::make_unexpected(load_result.error());
+    auto batch = std::move(load_result.value());
+    BatchGetResult result{batch->batch_id, batch->pointers};
+    MutexLocker locker(&client_buffer_mutex_);
+    client_buffer_allocated_batches_.emplace(batch->batch_id, std::move(batch));
+    return result;
+}
+
+tl::expected<FileStorage::LocalBatchResult, ErrorCode>
+FileStorage::BatchGetLocalDiskObjectsLocal(
+    const std::vector<LocalDiskReadRequest>& requests) {
+    auto load_result = LoadLocalDiskObjects(requests, true);
+    if (!load_result) return tl::make_unexpected(load_result.error());
     auto batch = std::move(load_result.value());
     LocalBatchResult result;
     result.pointers = std::move(batch->pointers);
@@ -894,18 +1076,21 @@ tl::expected<void, ErrorCode> FileStorage::Heartbeat() {
                 auto remount_result =
                     client_->MountLocalDiskSegment(enable_offloading_);
                 if (remount_result) {
-                    // Report configured SSD capacity so the Master can
-                    // restore file_total_capacity_ (the denominator in
-                    // "SSD Storage: X / Y").  This was lost on restart;
-                    // re-reporting it here avoids the 0 B display.
-                    if (config_.total_size_limit > 0) {
-                        auto cap_result = client_->ReportSsdCapacity(
-                            config_.total_size_limit);
+                    auto direct_capacity =
+                        direct_local_backend_->GetCapacityBytes();
+                    if (direct_capacity) {
+                        auto cap_result =
+                            client_->ReportSsdCapacity(*direct_capacity);
                         if (!cap_result) {
                             LOG(WARNING)
                                 << "ReportSsdCapacity failed during "
                                 << "heartbeat recovery: " << cap_result.error();
                         }
+                    } else {
+                        LOG(WARNING)
+                            << "Failed to query direct-local backend capacity "
+                            << "during heartbeat recovery: "
+                            << direct_capacity.error();
                     }
                     heartbeat_result = client_->OffloadObjectHeartbeat(
                         enable_offloading_, offloading_objects);
@@ -950,6 +1135,52 @@ tl::expected<void, ErrorCode> FileStorage::Heartbeat() {
         RemoveAll();
     }
 
+    auto removal_result = client_->PollLocalDiskRemovals();
+    if (!removal_result) {
+        LOG(WARNING) << "Failed to poll local disk removals: "
+                     << removal_result.error();
+    } else {
+        using RemovalIdentity = std::pair<std::string, std::string>;
+        std::map<RemovalIdentity, std::vector<const LocalDiskRemoval*>> grouped;
+        for (const auto& removal : removal_result.value()) {
+            grouped[{removal.tenant_id, removal.key}].push_back(&removal);
+        }
+        for (const auto& [identity, removals] : grouped) {
+            bool success = true;
+            for (const auto* removal : removals) {
+                LocalObjectLocator locator;
+                locator.backend_id =
+                    removal->descriptor.backend_id.value_or("");
+                locator.locator = removal->descriptor.locator.value_or("");
+                locator.object_size = removal->descriptor.object_size;
+                locator.generation = removal->descriptor.generation.value_or(0);
+                auto remove_result = RemoveDirectObject(locator);
+                success = success && remove_result.has_value();
+                if (!remove_result) {
+                    LOG(WARNING)
+                        << "action=heterogeneous_storage_remove"
+                        << ", key_id=" << SafeObjectKeyId(removal->key)
+                        << ", object_size=" << removal->descriptor.object_size
+                        << ", target=local_nvme" << ", replica_type=LOCAL_DISK"
+                        << ", stage=owner_remove"
+                        << ", error=" << toString(remove_result.error());
+                }
+            }
+            auto ack_result = client_->AckLocalDiskRemoval(
+                identity.second, success, identity.first);
+            if (!ack_result) {
+                LOG(WARNING)
+                    << "action=heterogeneous_storage_remove"
+                    << ", key_id=" << SafeObjectKeyId(identity.second)
+                    << ", object_size="
+                    << removals.front()->descriptor.object_size
+                    << ", target=local_nvme" << ", replica_type=LOCAL_DISK"
+                    << ", stage=owner_ack"
+                    << ", error=" << toString(ack_result.error());
+            }
+        }
+    }
+
     // === STEP 3: Persist offloaded objects (trigger actual data migration) ===
     if (!offloading_objects.empty()) {
         auto offload_result = OffloadObjects(offloading_objects);
@@ -990,6 +1221,9 @@ void FileStorage::RemoveAll() {
     // physical isolation needs backend-level tenant-scoped layout (follow-up).
     if (storage_backend_) {
         storage_backend_->RemoveAll();
+    }
+    if (direct_local_backend_) {
+        direct_local_backend_->RemoveAll();
     }
     LOG(INFO) << "FileStorage::RemoveAll: cleared storage backend";
 }

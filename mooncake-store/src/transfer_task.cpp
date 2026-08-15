@@ -1321,31 +1321,34 @@ std::optional<TransferFuture> TransferSubmitter::submitMemoryWriteOperation(
 std::optional<TransferFuture> TransferSubmitter::submitRangeRead(
     const Replica::Descriptor& replica, std::vector<Slice>& slices,
     uint64_t src_offset) {
-    std::optional<TransferFuture> future;
-
+    const AllocatedBuffer::Descriptor* handle = nullptr;
     if (replica.is_memory_replica()) {
-        auto& mem_desc = replica.get_memory_descriptor();
-        auto& handle = mem_desc.buffer_descriptor;
-
-        size_t slices_size = 0;
-        for (const auto& s : slices) slices_size += s.size;
-        if (src_offset > std::numeric_limits<uint64_t>::max() - slices_size ||
-            src_offset + slices_size > handle.size_) {
-            LOG(ERROR) << "Range read overflow: src_offset=" << src_offset
-                       << " + slices_size=" << slices_size
-                       << " > handle.size_=" << handle.size_;
-            return std::nullopt;
-        }
-
-        future = submitMemoryReadOperation(handle, slices, src_offset);
+        handle = &replica.get_memory_descriptor().buffer_descriptor;
     } else if (replica.is_nof_replica()) {
-        LOG(ERROR) << "Range read not supported for NoF replicas";
-        return std::nullopt;
+        handle = &replica.get_nof_descriptor().buffer_descriptor;
     } else if (replica.is_disk_replica() || replica.is_local_disk_replica()) {
         LOG(ERROR)
             << "Range read not supported for disk replicas (use full read)";
         return std::nullopt;
     }
+
+    if (handle == nullptr) {
+        return std::nullopt;
+    }
+
+    size_t slices_size = 0;
+    for (const auto& slice : slices) {
+        slices_size += slice.size;
+    }
+    if (src_offset > std::numeric_limits<uint64_t>::max() - slices_size ||
+        src_offset + slices_size > handle->size_) {
+        LOG(ERROR) << "Range read overflow: src_offset=" << src_offset
+                   << " + slices_size=" << slices_size
+                   << " > handle.size_=" << handle->size_;
+        return std::nullopt;
+    }
+
+    auto future = submitMemoryReadOperation(*handle, slices, src_offset);
 
     if (future.has_value()) {
         updateTransferMetrics(slices, TransferRequest::READ);

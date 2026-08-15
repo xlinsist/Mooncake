@@ -122,6 +122,8 @@ inline const Replica::Descriptor *PickBestRemoteMemory(
 inline const Replica::Descriptor *SelectBestReplica(
     const std::vector<Replica::Descriptor> &replicas,
     const std::unordered_set<std::string> &local_endpoints) {
+    const Replica::Descriptor *local_memory = nullptr;
+    const Replica::Descriptor *local_nof = nullptr;
     const Replica::Descriptor *first_memory = nullptr;
     const Replica::Descriptor *first_nof = nullptr;
     for (const auto &r : replicas) {
@@ -130,18 +132,22 @@ inline const Replica::Descriptor *SelectBestReplica(
             if (local_endpoints.count(
                     r.get_memory_descriptor()
                         .buffer_descriptor.transport_endpoint_)) {
-                return &r;  // local MEMORY — best case
+                if (!local_memory) local_memory = &r;
+                continue;
             }
             if (!first_memory) first_memory = &r;
         } else if (r.is_nof_replica()) {
             if (local_endpoints.count(
                     r.get_nof_descriptor()
                         .buffer_descriptor.transport_endpoint_)) {
-                return &r;  // local NOF_SSD — also good
+                if (!local_nof) local_nof = &r;
+                continue;
             }
             if (!first_nof) first_nof = &r;
         }
     }
+    if (local_memory) return local_memory;
+    if (local_nof) return local_nof;
     // No local replica. Among remote MEMORY replicas, optionally pick the
     // best-scoring one instead of the first encountered (issue #2516).
     if (first_memory && RemoteReplicaScoringEnabled()) {

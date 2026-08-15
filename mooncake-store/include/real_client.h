@@ -110,7 +110,7 @@ class RealClient : public PyClient {
     uint64_t alloc_from_mem_pool(size_t size) { return 0; };
 
     int put(const std::string &key, std::span<const char> value,
-            const ReplicateConfig &config = ReplicateConfig{});
+            const ReplicateConfig &config = ManagedReplicateConfig());
 
     int register_buffer(void *buffer, size_t size);
 
@@ -189,7 +189,7 @@ class RealClient : public PyClient {
      * buffer
      */
     int put_from(const std::string &key, void *buffer, size_t size,
-                 const ReplicateConfig &config = ReplicateConfig{});
+                 const ReplicateConfig &config = ManagedReplicateConfig());
 
     /**
      * @brief Put one object directly from a registered data buffer plus a
@@ -205,7 +205,7 @@ class RealClient : public PyClient {
     int put_from_with_metadata(
         const std::string &key, void *buffer, void *metadata_buffer,
         size_t size, size_t metadata_size,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     /**
      * @brief Put object data directly from pre-allocated buffers for multiple
@@ -224,7 +224,7 @@ class RealClient : public PyClient {
     std::vector<int> batch_put_from(
         const std::vector<std::string> &keys,
         const std::vector<void *> &buffers, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     /**
      * @brief Put object data directly from multiple pre-allocated buffers for
@@ -244,7 +244,7 @@ class RealClient : public PyClient {
         const std::vector<std::string> &keys,
         const std::vector<std::vector<void *>> &all_buffers,
         const std::vector<std::vector<size_t>> &all_sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<int> batch_get_session_start(
         const std::vector<std::string> &keys) override;
@@ -259,7 +259,7 @@ class RealClient : public PyClient {
 
     std::vector<int> batch_put_session_start(
         const std::vector<std::string> &keys, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{}) override;
+        const ReplicateConfig &config = ManagedReplicateConfig()) override;
 
     std::vector<int> batch_put_from_multi_buffer_ranges(
         const std::vector<std::string> &keys,
@@ -275,30 +275,30 @@ class RealClient : public PyClient {
 
     int put_parts(const std::string &key,
                   std::vector<std::span<const char>> values,
-                  const ReplicateConfig &config = ReplicateConfig{});
+                  const ReplicateConfig &config = ManagedReplicateConfig());
 
     int put_batch(const std::vector<std::string> &keys,
                   const std::vector<std::span<const char>> &values,
-                  const ReplicateConfig &config = ReplicateConfig{});
+                  const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert(const std::string &key, std::span<const char> value,
-               const ReplicateConfig &config = ReplicateConfig{});
+               const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert_from(const std::string &key, void *buffer, size_t size,
-                    const ReplicateConfig &config = ReplicateConfig{});
+                    const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<int> batch_upsert_from(
         const std::vector<std::string> &keys,
         const std::vector<void *> &buffers, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert_parts(const std::string &key,
                      std::vector<std::span<const char>> values,
-                     const ReplicateConfig &config = ReplicateConfig{});
+                     const ReplicateConfig &config = ManagedReplicateConfig());
 
     int upsert_batch(const std::vector<std::string> &keys,
                      const std::vector<std::span<const char>> &values,
-                     const ReplicateConfig &config = ReplicateConfig{});
+                     const ReplicateConfig &config = ManagedReplicateConfig());
 
     [[nodiscard]] std::string get_hostname() const;
 
@@ -572,7 +572,7 @@ class RealClient : public PyClient {
 
     tl::expected<void, ErrorCode> put_internal(
         const std::string &key, std::span<const char> value,
-        const ReplicateConfig &config = ReplicateConfig{},
+        const ReplicateConfig &config = ManagedReplicateConfig(),
         const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator =
             nullptr);
 
@@ -627,59 +627,59 @@ class RealClient : public PyClient {
 
     tl::expected<void, ErrorCode> put_from_internal(
         const std::string &key, void *buffer, size_t size,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     tl::expected<void, ErrorCode> upsert_internal(
         const std::string &key, std::span<const char> value,
-        const ReplicateConfig &config = ReplicateConfig{},
+        const ReplicateConfig &config = ManagedReplicateConfig(),
         std::shared_ptr<ClientBufferAllocator> client_buffer_allocator =
             nullptr);
 
     tl::expected<void, ErrorCode> upsert_from_internal(
         const std::string &key, void *buffer, size_t size,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<tl::expected<void, ErrorCode>> batch_upsert_from_internal(
         const std::vector<std::string> &keys,
         const std::vector<void *> &buffers, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     tl::expected<void, ErrorCode> upsert_parts_internal(
         const std::string &key, std::vector<std::span<const char>> values,
-        const ReplicateConfig &config = ReplicateConfig{},
+        const ReplicateConfig &config = ManagedReplicateConfig(),
         std::shared_ptr<ClientBufferAllocator> client_buffer_allocator =
             nullptr);
 
     tl::expected<void, ErrorCode> upsert_batch_internal(
         const std::vector<std::string> &keys,
         const std::vector<std::span<const char>> &values,
-        const ReplicateConfig &config = ReplicateConfig{},
+        const ReplicateConfig &config = ManagedReplicateConfig(),
         std::shared_ptr<ClientBufferAllocator> client_buffer_allocator =
             nullptr);
 
     std::vector<tl::expected<void, ErrorCode>> batch_put_from_internal(
         const std::vector<std::string> &keys,
         const std::vector<void *> &buffers, const std::vector<size_t> &sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     std::vector<tl::expected<void, ErrorCode>>
     batch_put_from_multi_buffers_internal(
         const std::vector<std::string> &keys,
         const std::vector<std::vector<void *>> &all_buffers,
         const std::vector<std::vector<size_t>> &all_sizes,
-        const ReplicateConfig &config = ReplicateConfig{});
+        const ReplicateConfig &config = ManagedReplicateConfig());
 
     tl::expected<void, ErrorCode> put_parts_internal(
         const std::string &key,
         const std::vector<std::span<const char>> &values,
-        const ReplicateConfig &config = ReplicateConfig{},
+        const ReplicateConfig &config = ManagedReplicateConfig(),
         const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator =
             nullptr);
 
     tl::expected<void, ErrorCode> put_batch_internal(
         const std::vector<std::string> &keys,
         const std::vector<std::span<const char>> &values,
-        const ReplicateConfig &config = ReplicateConfig{},
+        const ReplicateConfig &config = ManagedReplicateConfig(),
         const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator =
             nullptr);
 
@@ -730,6 +730,14 @@ class RealClient : public PyClient {
     batch_get_offload_object(const std::vector<std::string> &keys,
                              const std::vector<int64_t> &sizes);
 
+    async_simple::coro::Lazy<
+        tl::expected<BatchGetOffloadObjectResponse, ErrorCode>>
+    batch_get_local_disk_objects(
+        const std::vector<LocalDiskReadRequest> &requests);
+    async_simple::coro::Lazy<
+        tl::expected<BatchGetOffloadObjectResponse, ErrorCode>>
+    batch_get_local_disk_objects_v2(const LocalDiskReadBatchRequest &request);
+
     /**
      * @brief Releases buffer associated with a specific batch_id.
      * Called by remote client after transfer completion.
@@ -752,6 +760,8 @@ class RealClient : public PyClient {
     tl::expected<void, ErrorCode> batch_get_into_offload_object_internal(
         const std::string &target_rpc_service_addr,
         std::unordered_map<std::string, std::vector<Slice>> &objects,
+        const std::unordered_map<std::string, LocalDiskDescriptor>
+            *descriptors = nullptr,
         const OffloadReadRange *read_range = nullptr);
 
     bool can_use_pinned_restore_arena(

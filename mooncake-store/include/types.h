@@ -401,6 +401,10 @@ enum class ErrorCode : int32_t {
     TENANT_NOT_EMPTY = -1702,         ///< Tenant still owns objects or quota.
 };
 
+constexpr bool IsAmbiguousRpcError(ErrorCode error) {
+    return error == ErrorCode::RPC_FAIL || error == ErrorCode::RPC_TIMEOUT;
+}
+
 int32_t toInt(ErrorCode errorCode) noexcept;
 ErrorCode fromInt(int32_t errorCode) noexcept;
 

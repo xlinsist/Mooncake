@@ -30,6 +30,7 @@
 #include "count_min_sketch.h"
 #include "deadline_scheduler.h"
 #include "master_metric_manager.h"
+#include "placement_policy.h"
 #include "mutex.h"
 #include "segment.h"
 #include "tenant_quota_ledger.h"
@@ -84,6 +85,7 @@ class PromotionOnHitTest;
 class MasterServiceTenantQuotaTest;
 class MasterScenario;
 class MasterServiceHATest;
+class HeterogeneousStorageTestAccess;
 // Friended so the processing_keys double-erase reproduction test can
 // invalidate a segment allocator via PrepareUnmountSegment WITHOUT the
 // ClearInvalidHandles sweep that MasterService::UnmountSegment performs.
@@ -130,6 +132,7 @@ class MasterService {
                                            // members
     friend class ha::MasterSnapshotCodecTest;  // codec round-trip unit test
     friend class test::MasterServiceHATest;
+    friend class test::HeterogeneousStorageTestAccess;
 
    public:
     using NoFProbeFn =
@@ -182,8 +185,8 @@ class MasterService {
      *         be mounted temporarily,
      *         ErrorCode::INTERNAL_ERROR on internal errors.
      */
-    auto MountSegment(const Segment& segment, const UUID& client_id)
-        -> tl::expected<void, ErrorCode>;
+    auto MountSegment(const Segment& segment,
+                      const UUID& client_id) -> tl::expected<void, ErrorCode>;
 
     /**
      * @brief Mount a NoF SSD segment for buffer allocation. This function is
@@ -232,8 +235,8 @@ class MasterService {
      *         ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS if the segment is
      *         currently unmounting.
      */
-    auto UnmountSegment(const UUID& segment_id, const UUID& client_id)
-        -> tl::expected<void, ErrorCode>;
+    auto UnmountSegment(const UUID& segment_id,
+                        const UUID& client_id) -> tl::expected<void, ErrorCode>;
 
     auto GracefulUnmountSegment(const UUID& segment_id, const UUID& client_id,
                                 uint64_t grace_period_ms)
@@ -252,8 +255,8 @@ class MasterService {
      * @brief Check if an object exists
      * @return ErrorCode::OK if exists, otherwise return other ErrorCode
      */
-    auto ExistKey(const std::string& key, const TenantId& tenant_id)
-        -> tl::expected<bool, ErrorCode>;
+    auto ExistKey(const std::string& key,
+                  const TenantId& tenant_id) -> tl::expected<bool, ErrorCode>;
 
     std::vector<tl::expected<bool, ErrorCode>> BatchExistKey(
         const std::vector<std::string>& keys, const TenantId& tenant_id);
@@ -344,9 +347,10 @@ class MasterService {
      * clients are omitted from the result map. Clients that exist but have no
      * IPs are included with empty vectors.
      */
-    auto BatchQueryIp(const std::vector<UUID>& client_ids) -> tl::expected<
-        std::unordered_map<UUID, std::vector<std::string>, boost::hash<UUID>>,
-        ErrorCode>;
+    auto BatchQueryIp(const std::vector<UUID>& client_ids)
+        -> tl::expected<std::unordered_map<UUID, std::vector<std::string>,
+                                           boost::hash<UUID>>,
+                        ErrorCode>;
 
     bool KvEventsEnabled() const;
     KvEventPublisher::Stats GetKvEventStats() const;
@@ -443,19 +447,19 @@ class MasterService {
      * found, ErrorCode::INVALID_WRITE if replica status is invalid
      */
     auto PutEnd(const UUID& client_id, const ObjectMeta& object_meta,
-                const TenantId& tenant_id, ReplicaType replica_type)
-        -> tl::expected<void, ErrorCode>;
+                const TenantId& tenant_id,
+                ReplicaType replica_type) -> tl::expected<void, ErrorCode>;
 
     auto PutEnd(const UUID& client_id, const std::string& key,
-                const TenantId& tenant_id, ReplicaType replica_type)
-        -> tl::expected<void, ErrorCode>;
+                const TenantId& tenant_id,
+                ReplicaType replica_type) -> tl::expected<void, ErrorCode>;
 
     /**
      * @brief Adds a replica instance associated with the given client and key.
      */
     auto AddReplica(const UUID& client_id, const std::string& key,
-                    const TenantId& tenant_id, Replica& replica)
-        -> tl::expected<bool, ErrorCode>;
+                    const TenantId& tenant_id,
+                    Replica& replica) -> tl::expected<bool, ErrorCode>;
 
     /**
      * @brief Revoke a put operation, replica_type indicates the type of
@@ -464,8 +468,8 @@ class MasterService {
      * found, ErrorCode::INVALID_WRITE if replica status is invalid
      */
     auto PutRevoke(const UUID& client_id, const std::string& key,
-                   const TenantId& tenant_id, ReplicaType replica_type)
-        -> tl::expected<void, ErrorCode>;
+                   const TenantId& tenant_id,
+                   ReplicaType replica_type) -> tl::expected<void, ErrorCode>;
 
     /**
      * @brief Complete a batch of put operations
@@ -503,12 +507,12 @@ class MasterService {
      * @brief Complete an upsert operation. Delegates to PutEnd.
      */
     auto UpsertEnd(const UUID& client_id, const ObjectMeta& object_meta,
-                   const TenantId& tenant_id, ReplicaType replica_type)
-        -> tl::expected<void, ErrorCode>;
+                   const TenantId& tenant_id,
+                   ReplicaType replica_type) -> tl::expected<void, ErrorCode>;
 
     auto UpsertEnd(const UUID& client_id, const std::string& key,
-                   const TenantId& tenant_id, ReplicaType replica_type)
-        -> tl::expected<void, ErrorCode>;
+                   const TenantId& tenant_id,
+                   ReplicaType replica_type) -> tl::expected<void, ErrorCode>;
 
     /**
      * @brief Revoke an upsert operation. Delegates to PutRevoke.
@@ -697,6 +701,10 @@ class MasterService {
     auto MountLocalDiskSegment(const UUID& client_id, bool enable_offloading)
         -> tl::expected<void, ErrorCode>;
 
+    auto RebindLocalDiskBackend(
+        const UUID& client_id, const std::string& backend_id,
+        const std::string& transport_endpoint) -> tl::expected<long, ErrorCode>;
+
     /**
      * @brief Heartbeat call to collect object-level statistics and retrieve the
      * set of non-offloaded objects.
@@ -714,6 +722,13 @@ class MasterService {
      */
     auto PollRemoveAll(const UUID& client_id) -> tl::expected<bool, ErrorCode>;
 
+    auto PollLocalDiskRemovals(const UUID& client_id)
+        -> tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>;
+
+    auto AckLocalDiskRemoval(const UUID& client_id, const std::string& key,
+                             const TenantId& tenant_id,
+                             bool success) -> tl::expected<void, ErrorCode>;
+
     auto ReportSsdCapacity(const UUID& client_id,
                            int64_t ssd_total_capacity_bytes)
         -> tl::expected<void, ErrorCode>;
@@ -726,10 +741,10 @@ class MasterService {
      * @param metadatas    The corresponding metadata for each offloaded object,
      * including size, storage location, etc.
      */
-    auto NotifyOffloadSuccess(
-        const UUID& client_id, const std::vector<OffloadTaskItem>& tasks,
-        const std::vector<StorageObjectMetadata>& metadatas)
-        -> tl::expected<void, ErrorCode>;
+    auto NotifyOffloadSuccess(const UUID& client_id,
+                              const std::vector<OffloadTaskItem>& tasks,
+                              const std::vector<StorageObjectMetadata>&
+                                  metadatas) -> tl::expected<void, ErrorCode>;
 
     /**
      * @brief Heartbeat-driven pull of pending promotion work for a client.
@@ -1781,6 +1796,11 @@ class MasterService {
     auto ResolveSoftPinRequest(const ReplicateConfig& config) const
         -> tl::expected<ResolvedSoftPinRequest, ErrorCode>;
 
+    auto ResolvePlacementConfig(const UUID& client_id, const std::string& key,
+                                uint64_t value_length,
+                                const ReplicateConfig& config)
+        -> tl::expected<ReplicateConfig, ErrorCode>;
+
     // Helper to clean up stale handles pointing to unmounted segments
     // or local_disk replicas whose owner client is no longer alive.
     bool CleanupStaleHandles(
@@ -2363,6 +2383,9 @@ class MasterService {
     void cleanupHttpMetadata(const std::string& segment_name);
 
     bool use_disk_replica_{false};
+    std::unique_ptr<PlacementPolicy> heterogeneous_placement_policy_;
+    std::mutex local_disk_ack_mutex_;
+    std::unordered_set<std::string> pending_local_disk_acks_;
 
     // Segment management
     SegmentManager segment_manager_;

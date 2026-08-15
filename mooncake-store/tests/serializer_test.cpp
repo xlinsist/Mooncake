@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include "serializer.h"
+#include "rpc_types.h"
 #include "serialize/serializer.h"
 #include "segment.h"
 
@@ -215,6 +216,132 @@ TEST_F(SerializerTest, MountedSegmentDeserializesLegacyFormatWithoutHostId) {
     EXPECT_EQ(restored->segment.name, "legacy_segment");
     EXPECT_TRUE(restored->segment.host_id.empty());
     EXPECT_EQ(restored->status, SegmentStatus::OK);
+}
+
+TEST_F(SerializerTest, LocalDiskReplicaRoundTripPreservesLocator) {
+    const UUID owner{101, 202};
+    Replica original(owner, 8192, "127.0.0.1:19001", "backend-a",
+                     "objects/version-7", 7, "host-a", 3,
+                     ReplicaStatus::REMOVED);
+    SegmentView segment_view(nullptr);
+    msgpack::sbuffer buffer;
+    MsgpackPacker packer(&buffer);
+    ASSERT_TRUE(Serializer<Replica>::serialize(original, segment_view, packer));
+
+    auto object_handle = msgpack::unpack(buffer.data(), buffer.size());
+    auto restored =
+        Serializer<Replica>::deserialize(object_handle.get(), segment_view);
+    ASSERT_TRUE(restored);
+    EXPECT_EQ((*restored)->status(), ReplicaStatus::REMOVED);
+    const auto descriptor = (*restored)->get_descriptor();
+    ASSERT_TRUE(descriptor.is_local_disk_replica());
+    const auto& local = descriptor.get_local_disk_descriptor();
+    EXPECT_EQ(local.client_id, owner);
+    EXPECT_EQ(local.object_size, 8192);
+    EXPECT_EQ(local.transport_endpoint, "127.0.0.1:19001");
+    EXPECT_EQ(local.backend_id.value_or(""), "backend-a");
+    EXPECT_EQ(local.locator.value_or(""), "objects/version-7");
+    EXPECT_EQ(local.generation.value_or(0), 7);
+    EXPECT_EQ(local.host_id.value_or(""), "host-a");
+    EXPECT_EQ(local.removal_retry_count.value_or(0), 3);
+}
+
+TEST_F(SerializerTest, LocalDiskReplicaDeserializesLegacyPayload) {
+    const UUID owner{303, 404};
+    msgpack::sbuffer buffer;
+    MsgpackPacker packer(&buffer);
+    packer.pack_array(4);
+    packer.pack(static_cast<uint64_t>(77));
+    packer.pack(static_cast<int16_t>(ReplicaStatus::COMPLETE));
+    packer.pack(static_cast<int8_t>(ReplicaType::LOCAL_DISK));
+    packer.pack_array(3);
+    packer.pack(UuidToString(owner));
+    packer.pack(static_cast<uint64_t>(4096));
+    packer.pack(std::string("127.0.0.1:19002"));
+
+    SegmentView segment_view(nullptr);
+    auto object_handle = msgpack::unpack(buffer.data(), buffer.size());
+    auto restored =
+        Serializer<Replica>::deserialize(object_handle.get(), segment_view);
+    ASSERT_TRUE(restored);
+    const auto descriptor = (*restored)->get_descriptor();
+    ASSERT_TRUE(descriptor.is_local_disk_replica());
+    const auto& local = descriptor.get_local_disk_descriptor();
+    EXPECT_EQ(local.client_id, owner);
+    EXPECT_EQ(local.object_size, 4096);
+    EXPECT_EQ(local.transport_endpoint, "127.0.0.1:19002");
+    EXPECT_TRUE(local.backend_id.value_or("").empty());
+    EXPECT_TRUE(local.locator.value_or("").empty());
+    EXPECT_EQ(local.generation.value_or(0), 0);
+    EXPECT_TRUE(local.host_id.value_or("").empty());
+    EXPECT_EQ(local.removal_retry_count.value_or(0), 0);
+}
+
+TEST_F(SerializerTest, ManagedPlacementRequestPreservesCompatibleFields) {
+    ManagedPlacementStartRequest original;
+    original.client_id = UUID{11, 22};
+    original.key = "managed-key";
+    original.value_length = 8192;
+    original.config.placement_control = PlacementControl::MANAGED;
+    original.config.local_replica_num = 2;
+    original.tenant_id = "tenant-a";
+
+    auto encoded = struct_pack::serialize(original);
+    auto decoded =
+        struct_pack::deserialize<ManagedPlacementStartRequest>(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->client_id, original.client_id);
+    EXPECT_EQ(decoded->key, original.key);
+    EXPECT_EQ(decoded->value_length, original.value_length);
+    EXPECT_EQ(
+        decoded->config.placement_control.value_or(PlacementControl::MANUAL),
+        PlacementControl::MANAGED);
+    EXPECT_EQ(decoded->config.local_replica_num.value_or(0), 2);
+    EXPECT_EQ(decoded->tenant_id, original.tenant_id);
+}
+
+TEST_F(SerializerTest, PlacementEndRequestPreservesLocator) {
+    PlacementEndRequest original;
+    original.client_id = UUID{33, 44};
+    original.object_meta.key = "placed-key";
+    original.object_meta.local_disk_transport_endpoint = "127.0.0.1:19001";
+    original.object_meta.local_disk_backend_id = "backend-a";
+    original.object_meta.local_disk_locator = "objects/generation-9";
+    original.object_meta.local_disk_generation = 9;
+    original.replica_type = ReplicaType::LOCAL_DISK;
+    original.tenant_id = "tenant-b";
+
+    auto encoded = struct_pack::serialize(original);
+    auto decoded = struct_pack::deserialize<PlacementEndRequest>(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->object_meta.local_disk_transport_endpoint.value_or(""),
+              "127.0.0.1:19001");
+    EXPECT_EQ(decoded->object_meta.local_disk_backend_id.value_or(""),
+              "backend-a");
+    EXPECT_EQ(decoded->object_meta.local_disk_locator.value_or(""),
+              "objects/generation-9");
+    EXPECT_EQ(decoded->object_meta.local_disk_generation.value_or(0), 9);
+}
+
+TEST_F(SerializerTest, LocalDiskReadBatchRequestPreservesLocators) {
+    LocalDiskReadRequest read;
+    read.storage_key = "tenant/key";
+    read.size = 4096;
+    read.backend_id = "backend-b";
+    read.locator = "objects/generation-12";
+    read.object_size = 16384;
+    read.generation = 12;
+    LocalDiskReadBatchRequest original{{read}};
+
+    auto encoded = struct_pack::serialize(original);
+    auto decoded = struct_pack::deserialize<LocalDiskReadBatchRequest>(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_EQ(decoded->requests.size(), 1);
+    const auto& restored = decoded->requests.front();
+    EXPECT_EQ(restored.backend_id.value_or(""), "backend-b");
+    EXPECT_EQ(restored.locator.value_or(""), "objects/generation-12");
+    EXPECT_EQ(restored.object_size.value_or(0), 16384);
+    EXPECT_EQ(restored.generation.value_or(0), 12);
 }
 
 }  // namespace mooncake::test

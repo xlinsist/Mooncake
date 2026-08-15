@@ -270,12 +270,6 @@ bool StorageBackend::IsFilePendingEviction(const std::string& path) const {
 }
 
 tl::expected<void, ErrorCode> StorageBackend::Init(uint64_t quota_bytes = 0) {
-    // Skip eviction initialization if disabled
-    if (!IsEvictionEnabled()) {
-        initialized_.store(true, std::memory_order_release);
-        return {};
-    }
-
     if (initialized_.load(std::memory_order_acquire)) {
         LOG(WARNING) << "StorageBackend is already initialized. Skipping.";
         return {};
@@ -337,6 +331,11 @@ tl::expected<void, ErrorCode> StorageBackend::Init(uint64_t quota_bytes = 0) {
         used_space_ = 0;
 
         for (const auto& entry : existing_files) {
+            const auto filename = entry.path().filename().string();
+            if (filename == ".mooncake-backend-id" ||
+                filename.find(".tmp.") != std::string::npos) {
+                continue;
+            }
             uint64_t file_size = entry.file_size(ec);
             if (!ec) {
                 const std::string& path_str = entry.path().string();
@@ -389,13 +388,18 @@ tl::expected<void, ErrorCode> StorageBackend::Init(uint64_t quota_bytes = 0) {
         std::unique_lock<std::shared_mutex> lock(space_mutex_);
         RecalculateAvailableSpace();
 
-        LOG(INFO) << "Init: "
-                  << "Quota: " << total_space_ << ", Used: " << used_space_
+        LOG(INFO) << "Init: " << "Quota: " << total_space_
+                  << ", Used: " << used_space_
                   << ", Available: " << available_space_;
     }
 
     initialized_.store(true, std::memory_order_release);
     return {};
+}
+
+uint64_t StorageBackend::GetTotalSpace() const {
+    std::shared_lock<std::shared_mutex> lock(space_mutex_);
+    return total_space_;
 }
 
 bool StorageBackend::InitQuotaEvict() {
@@ -489,6 +493,98 @@ tl::expected<std::vector<std::string>, ErrorCode> StorageBackend::StoreObject(
     }
 
     return evicted_keys;
+}
+
+tl::expected<StorageBackend::StagedWrite, ErrorCode>
+StorageBackend::StageObject(
+    const std::string& final_path, std::span<const char> data,
+    const std::string& key,
+    StorageBackendInterface::EvictionHandler eviction_handler) {
+    const uint64_t object_size = data.size();
+    if (!initialized_.load(std::memory_order_acquire)) {
+        return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+    }
+    auto space_result = EnsureDiskSpace(object_size, eviction_handler);
+    if (!space_result) {
+        return tl::make_unexpected(space_result.error());
+    }
+    const uint64_t reserved_size = object_size;
+
+    const std::string temporary_path =
+        final_path + ".tmp." + UuidToString(generate_uuid());
+    MutexLocker path_locker(&GetFilePathMutex(final_path));
+    if (IsEvictionEnabled() && IsFilePendingEviction(final_path)) {
+        ReleaseSpace(reserved_size);
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+    }
+
+    auto file_result = CreateFileForWriting(temporary_path, reserved_size);
+    if (!file_result) {
+        return tl::make_unexpected(file_result.error());
+    }
+    auto write_result = WriteDataToFile(file_result.value(), temporary_path,
+                                        data, reserved_size);
+    if (!write_result) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary_path, ignored);
+        return tl::make_unexpected(write_result.error());
+    }
+    auto sync_result = file_result.value()->datasync();
+    if (!sync_result) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary_path, ignored);
+        ReleaseSpace(reserved_size);
+        return tl::make_unexpected(sync_result.error());
+    }
+    file_result.value().reset();
+    return StagedWrite{temporary_path, final_path, object_size, key};
+}
+
+tl::expected<void, ErrorCode> StorageBackend::CommitObject(
+    const StagedWrite& staged) {
+    MutexLocker path_locker(&GetFilePathMutex(staged.final_path));
+    if (::link(staged.temporary_path.c_str(), staged.final_path.c_str()) != 0) {
+        const int link_error = errno;
+        AbortObject(staged);
+        if (link_error == EEXIST) {
+            return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
+        }
+        LOG(ERROR) << "Failed to publish staged object "
+                   << staged.temporary_path << " to " << staged.final_path
+                   << ": " << std::strerror(link_error);
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+    }
+    if (::unlink(staged.temporary_path.c_str()) != 0) {
+        LOG(WARNING) << "Failed to remove staged link after commit: "
+                     << staged.temporary_path << ": " << std::strerror(errno);
+    }
+
+    const auto parent = std::filesystem::path(staged.final_path).parent_path();
+    int parent_fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (parent_fd >= 0) {
+        if (::fsync(parent_fd) != 0) {
+            LOG(WARNING) << "Failed to fsync object directory " << parent
+                         << ": " << std::strerror(errno);
+        }
+        ::close(parent_fd);
+    }
+    AddFileToWriteQueue(staged.final_path, staged.size, staged.key);
+    return {};
+}
+
+tl::expected<void, ErrorCode> StorageBackend::AbortObject(
+    const StagedWrite& staged) {
+    std::error_code error;
+    const bool removed = std::filesystem::remove(staged.temporary_path, error);
+    if (error && error != std::errc::no_such_file_or_directory) {
+        LOG(ERROR) << "Failed to abort staged object " << staged.temporary_path
+                   << ": " << error.message();
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+    }
+    if (removed) {
+        ReleaseSpace(staged.size);
+    }
+    return {};
 }
 
 tl::expected<std::vector<std::string>, ErrorCode> StorageBackend::StoreObject(
@@ -708,6 +804,43 @@ void StorageBackend::RemoveFile(const std::string& path) {
     ReleaseSpace(file_size);
 }
 
+tl::expected<bool, ErrorCode> StorageBackend::RemoveFileIdempotent(
+    const std::string& path) {
+    namespace fs = std::filesystem;
+    MutexLocker path_locker(&GetFilePathMutex(path));
+    std::error_code error;
+    uint64_t tracked_size = 0;
+    bool tracked = false;
+    {
+        std::shared_lock<std::shared_mutex> lock(file_queue_mutex_);
+        auto it = file_queue_map_.find(path);
+        if (it != file_queue_map_.end()) {
+            tracked_size = it->second->size;
+            tracked = true;
+        }
+    }
+    const bool removed = fs::remove(path, error);
+    if (error && error != std::errc::no_such_file_or_directory) {
+        LOG(ERROR) << "Failed to remove local object " << path << ": "
+                   << error.message();
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+    }
+    if (tracked) {
+        RemoveFileFromWriteQueue(path);
+        ReleaseSpace(tracked_size);
+    }
+    if (removed) {
+        const auto parent = fs::path(path).parent_path();
+        int parent_fd =
+            ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (parent_fd >= 0) {
+            ::fsync(parent_fd);
+            ::close(parent_fd);
+        }
+    }
+    return removed;
+}
+
 void StorageBackend::RemoveByRegex(const std::string& regex_pattern) {
     namespace fs = std::filesystem;
     std::regex pattern;
@@ -742,7 +875,7 @@ void StorageBackend::RemoveByRegex(const std::string& regex_pattern) {
         }
 
         for (const auto& path : paths_to_remove) {
-            RemoveFile(path.string());
+            (void)RemoveFileIdempotent(path.string());
         }
 
         return;
@@ -770,15 +903,33 @@ void StorageBackend::RemoveAll() {
 
     // Eviction disabled, use simple delete (no queue tracking)
     if (!IsEvictionEnabled()) {
-        std::vector<std::string> paths_to_remove;
-        // Iterate through the root directory and remove all files
-        for (const auto& entry : fs::directory_iterator(root_dir_)) {
-            if (fs::is_regular_file(entry.status())) {
-                paths_to_remove.push_back(entry.path().string());
+        const fs::path storage_root = fs::path(root_dir_) / GetActualFsdir();
+        std::error_code error;
+        if (!fs::exists(storage_root, error)) {
+            return;
+        }
+        for (fs::directory_iterator it(storage_root, error), end;
+             !error && it != end; it.increment(error)) {
+            if (it->path().filename() == ".mooncake-backend-id") {
+                continue;
+            }
+            std::error_code remove_error;
+            fs::remove_all(it->path(), remove_error);
+            if (remove_error) {
+                LOG(ERROR) << "Failed to remove backend object path "
+                           << it->path() << ": " << remove_error.message();
             }
         }
-        for (const auto& path : paths_to_remove) {
-            RemoveFile(path);
+        {
+            std::unique_lock<std::shared_mutex> queue_lock(file_queue_mutex_);
+            file_write_queue_.clear();
+            file_queue_map_.clear();
+            pending_eviction_paths_.clear();
+        }
+        {
+            std::unique_lock<std::shared_mutex> space_lock(space_mutex_);
+            used_space_ = 0;
+            RecalculateAvailableSpace();
         }
         return;
     }
@@ -1135,9 +1286,11 @@ StorageBackend::EnsureDiskSpace(
     size_t required_size,
     StorageBackendInterface::EvictionHandler eviction_handler) {
     std::vector<std::string> evicted_keys;
-    // If eviction is disabled, skip space checking and eviction
     if (!IsEvictionEnabled()) {
-        return evicted_keys;
+        if (CheckDiskSpace(required_size)) {
+            return evicted_keys;
+        }
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
     }
 
     const size_t kMaxEvictionAttempts = 1000;
@@ -1373,17 +1526,273 @@ tl::expected<void, ErrorCode> StorageBackendAdaptor::Init() {
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
 
-    std::string storage_root =
-        file_storage_config_.storage_filepath + file_per_key_config_.fsdir;
+    const fs::path storage_root =
+        fs::path(file_storage_config_.storage_filepath) /
+        file_per_key_config_.fsdir;
+    fs::create_directories(storage_root, ec);
+    if (ec) {
+        LOG(ERROR) << "Failed to create file-per-key backend root: "
+                   << storage_root << ": " << ec.message();
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+    }
+
+    auto identity_result = InitBackendIdentity();
+    if (!identity_result) {
+        return identity_result;
+    }
+
+    for (fs::recursive_directory_iterator it(storage_root, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) continue;
+        if (it->path().filename().string().find(".tmp.") == std::string::npos) {
+            continue;
+        }
+        std::error_code remove_error;
+        fs::remove(it->path(), remove_error);
+        if (remove_error) {
+            LOG(WARNING) << "Failed to clean abandoned staged object "
+                         << it->path() << ": " << remove_error.message();
+        }
+    }
 
     storage_backend_ = std::make_unique<StorageBackend>(
         file_storage_config_.storage_filepath, file_per_key_config_.fsdir,
         file_per_key_config_.enable_eviction);
     storage_backend_->use_uring_ = file_storage_config_.use_uring;
-    auto init_result = storage_backend_->Init();
+    const uint64_t quota_bytes = file_storage_config_.total_size_limit > 0
+                                     ? file_storage_config_.total_size_limit
+                                     : 0;
+    auto init_result = storage_backend_->Init(quota_bytes);
     if (!init_result) {
         LOG(ERROR) << "Failed to init storage backend";
         return init_result;
+    }
+    return {};
+}
+
+tl::expected<void, ErrorCode> StorageBackendAdaptor::InitBackendIdentity() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path(file_storage_config_.storage_filepath) /
+                          file_per_key_config_.fsdir;
+    const fs::path identity_path = root / ".mooncake-backend-id";
+
+    const std::string candidate = UuidToString(generate_uuid()) + "\n";
+    const fs::path temporary_identity =
+        root / (".mooncake-backend-id.tmp." + UuidToString(generate_uuid()));
+    int fd = ::open(temporary_identity.c_str(),
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+    }
+    {
+        size_t written = 0;
+        while (written < candidate.size()) {
+            ssize_t count = ::write(fd, candidate.data() + written,
+                                    candidate.size() - written);
+            if (count < 0) {
+                if (errno == EINTR) continue;
+                ::close(fd);
+                std::error_code ignored;
+                fs::remove(temporary_identity, ignored);
+                return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+            }
+            written += static_cast<size_t>(count);
+        }
+        if (::fdatasync(fd) != 0) {
+            ::close(fd);
+            std::error_code ignored;
+            fs::remove(temporary_identity, ignored);
+            return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+        }
+        ::close(fd);
+        if (::link(temporary_identity.c_str(), identity_path.c_str()) != 0 &&
+            errno != EEXIST) {
+            std::error_code ignored;
+            fs::remove(temporary_identity, ignored);
+            return tl::make_unexpected(ErrorCode::FILE_WRITE_FAIL);
+        }
+        std::error_code ignored;
+        fs::remove(temporary_identity, ignored);
+        int root_fd = ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (root_fd >= 0) {
+            ::fsync(root_fd);
+            ::close(root_fd);
+        }
+    }
+
+    std::ifstream identity(identity_path);
+    if (!identity || !std::getline(identity, backend_id_) ||
+        backend_id_.empty()) {
+        LOG(ERROR) << "Failed to read backend identity " << identity_path;
+        return tl::make_unexpected(ErrorCode::FILE_READ_FAIL);
+    }
+    UUID parsed;
+    if (!StringToUuid(backend_id_, parsed)) {
+        LOG(ERROR) << "Invalid backend identity in " << identity_path;
+        return tl::make_unexpected(ErrorCode::DESERIALIZE_FAIL);
+    }
+    return {};
+}
+
+tl::expected<std::string, ErrorCode> StorageBackendAdaptor::ResolveLocatorPath(
+    const std::string& locator) const {
+    namespace fs = std::filesystem;
+    fs::path relative(locator);
+    if (relative.empty() || relative.is_absolute()) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    relative = relative.lexically_normal();
+    if (relative.empty() || *relative.begin() == "..") {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    const fs::path root = (fs::path(file_storage_config_.storage_filepath) /
+                           file_per_key_config_.fsdir)
+                              .lexically_normal();
+    return (root / relative).lexically_normal().string();
+}
+
+tl::expected<std::string, ErrorCode> StorageBackendAdaptor::GetBackendId()
+    const {
+    if (backend_id_.empty()) {
+        return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+    }
+    return backend_id_;
+}
+
+tl::expected<uint64_t, ErrorCode> StorageBackendAdaptor::GetCapacityBytes()
+    const {
+    if (!storage_backend_) {
+        return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+    }
+    return storage_backend_->GetTotalSpace();
+}
+
+tl::expected<StagedLocalObject, ErrorCode> StorageBackendAdaptor::StageObject(
+    const std::string& key, const std::vector<Slice>& slices) {
+    if (key.empty() || !storage_backend_ || backend_id_.empty()) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    KVEntry kv{key, ConcatSlicesToString(slices)};
+    std::string encoded;
+    struct_pb::to_pb(kv, encoded);
+    const std::string object_identity =
+        key + ".direct." + UuidToString(generate_uuid());
+    const std::string final_path = ResolvePathFromKey(
+        object_identity, file_storage_config_.storage_filepath,
+        file_per_key_config_.fsdir);
+    auto staged_result = storage_backend_->StageObject(
+        final_path, std::span<const char>(encoded.data(), encoded.size()), key);
+    if (!staged_result) {
+        return tl::make_unexpected(staged_result.error());
+    }
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path(file_storage_config_.storage_filepath) /
+                          file_per_key_config_.fsdir;
+    StagedLocalObject result;
+    result.committed.backend_id = backend_id_;
+    result.committed.locator =
+        fs::relative(staged_result->final_path, root).generic_string();
+    result.committed.object_size = kv.value.size();
+    result.staging_locator =
+        fs::relative(staged_result->temporary_path, root).generic_string();
+    {
+        MutexLocker lock(&mutex_);
+        staged_writes_.emplace(result.staging_locator,
+                               std::move(staged_result.value()));
+    }
+    return result;
+}
+
+tl::expected<LocalObjectLocator, ErrorCode> StorageBackendAdaptor::CommitObject(
+    const StagedLocalObject& staged) {
+    if (staged.committed.backend_id != backend_id_) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    StorageBackend::StagedWrite pending;
+    {
+        MutexLocker lock(&mutex_);
+        auto it = staged_writes_.find(staged.staging_locator);
+        if (it == staged_writes_.end()) {
+            return tl::make_unexpected(ErrorCode::OBJECT_NOT_FOUND);
+        }
+        pending = it->second;
+    }
+    auto commit_result = storage_backend_->CommitObject(pending);
+    if (!commit_result) {
+        MutexLocker lock(&mutex_);
+        staged_writes_.erase(staged.staging_locator);
+        return tl::make_unexpected(commit_result.error());
+    }
+    {
+        MutexLocker lock(&mutex_);
+        staged_writes_.erase(staged.staging_locator);
+        total_keys++;
+        total_size += pending.size;
+    }
+    return staged.committed;
+}
+
+tl::expected<void, ErrorCode> StorageBackendAdaptor::AbortObject(
+    const StagedLocalObject& staged) {
+    if (staged.committed.backend_id != backend_id_) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    StorageBackend::StagedWrite pending;
+    {
+        MutexLocker lock(&mutex_);
+        auto it = staged_writes_.find(staged.staging_locator);
+        if (it == staged_writes_.end()) return {};
+        pending = it->second;
+        staged_writes_.erase(it);
+    }
+    return storage_backend_->AbortObject(pending);
+}
+
+tl::expected<void, ErrorCode> StorageBackendAdaptor::LoadObject(
+    const LocalObjectLocator& locator, Slice destination) {
+    if (locator.backend_id != backend_id_ ||
+        destination.size != locator.object_size || locator.generation != 1) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    auto path = ResolveLocatorPath(locator.locator);
+    if (!path) return tl::make_unexpected(path.error());
+    std::string encoded;
+    std::error_code size_error;
+    auto encoded_size = std::filesystem::file_size(path.value(), size_error);
+    if (size_error ||
+        encoded_size > uint64_t(std::numeric_limits<int64_t>::max())) {
+        return tl::make_unexpected(ErrorCode::FILE_READ_FAIL);
+    }
+    auto load_result = storage_backend_->LoadObject(
+        path.value(), encoded, static_cast<int64_t>(encoded_size));
+    if (!load_result) return load_result;
+    KVEntry kv;
+    struct_pb::from_pb(kv, encoded);
+    if (kv.value.size() != destination.size) {
+        return tl::make_unexpected(ErrorCode::FILE_READ_FAIL);
+    }
+    if (!kv.value.empty()) {
+        std::memcpy(destination.ptr, kv.value.data(), kv.value.size());
+    }
+    return {};
+}
+
+tl::expected<void, ErrorCode> StorageBackendAdaptor::RemoveObject(
+    const LocalObjectLocator& locator) {
+    if (locator.backend_id != backend_id_ || locator.generation != 1) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    auto path = ResolveLocatorPath(locator.locator);
+    if (!path) return tl::make_unexpected(path.error());
+    auto remove_result = storage_backend_->RemoveFileIdempotent(path.value());
+    if (!remove_result) {
+        return tl::make_unexpected(remove_result.error());
+    }
+    if (!remove_result.value()) return {};
+    MutexLocker lock(&mutex_);
+    if (total_keys > 0) total_keys--;
+    if (locator.object_size <= static_cast<uint64_t>(total_size)) {
+        total_size -= locator.object_size;
     }
     return {};
 }
@@ -1448,13 +1857,22 @@ tl::expected<int64_t, ErrorCode> StorageBackendAdaptor::BatchOffload(
 
         std::string kv_buf;
         struct_pb::to_pb(kv, kv_buf);
-        auto store_result = storage_backend_->StoreObject(path, kv_buf, kv.key,
-                                                          eviction_handler);
-        if (!store_result) {
+        auto stage_result = storage_backend_->StageObject(
+            path, std::span<const char>(kv_buf.data(), kv_buf.size()), kv.key,
+            eviction_handler);
+        if (!stage_result) {
             LOG(ERROR) << "Failed to store object for key: " << kv.key
-                       << ", error: " << store_result.error()
+                       << ", error: " << stage_result.error()
                        << " - continuing with remaining keys";
             continue;  // Continue processing other keys
+        }
+        auto commit_result =
+            storage_backend_->CommitObject(stage_result.value());
+        if (!commit_result) {
+            LOG(ERROR) << "Failed to commit object for key: " << kv.key
+                       << ", error: " << commit_result.error()
+                       << " - continuing with remaining keys";
+            continue;
         }
 
         {
@@ -2247,8 +2665,7 @@ tl::expected<void, ErrorCode> BucketStorageBackend::Init() {
                 orphaned_space_freed += file_size;
                 LOG(WARNING) << "Removed orphaned bucket file (no metadata): "
                              << entry.path().string() << " (size: " << file_size
-                             << " bytes, "
-                             << "bucket_id: " << bucket_id << ")";
+                             << " bytes, " << "bucket_id: " << bucket_id << ")";
             } else if (cleanup_ec) {
                 LOG(ERROR) << "Failed to remove orphaned bucket file: "
                            << entry.path().string()
@@ -2355,8 +2772,8 @@ tl::expected<int64_t, ErrorCode> BucketStorageBackend::BucketScan(
     auto bucket_it = buckets_.lower_bound(bucket_id);
     for (; bucket_it != buckets_.end(); ++bucket_it) {
         if (static_cast<int64_t>(bucket_it->second->keys.size()) > limit) {
-            LOG(ERROR) << "Bucket key count exceeds limit: "
-                       << "bucket_id=" << bucket_it->first
+            LOG(ERROR) << "Bucket key count exceeds limit: " << "bucket_id="
+                       << bucket_it->first
                        << ", current_size=" << bucket_it->second->keys.size()
                        << ", limit=" << limit;
             return tl::make_unexpected(ErrorCode::KEYS_EXCEED_BUCKET_LIMIT);
@@ -2446,8 +2863,8 @@ tl::expected<void, ErrorCode> BucketStorageBackend::GroupOffloadingKeysByBucket(
             }
 
             if (it->second > bucket_backend_config_.bucket_size_limit) {
-                VLOG(1) << "Object size exceeds bucket size limit: "
-                        << "key=" << it->first << ", object_size=" << it->second
+                VLOG(1) << "Object size exceeds bucket size limit: " << "key="
+                        << it->first << ", object_size=" << it->second
                         << ", limit="
                         << bucket_backend_config_.bucket_size_limit;
                 ++it;

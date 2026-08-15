@@ -413,6 +413,9 @@ class MasterClient {
     [[nodiscard]] tl::expected<void, ErrorCode> MountLocalDiskSegment(
         const UUID& client_id, bool enable_offloading);
 
+    [[nodiscard]] tl::expected<long, ErrorCode> RebindLocalDiskBackend(
+        const std::string& backend_id, const std::string& transport_endpoint);
+
     /**
      * @brief Heartbeat call to collect object-level statistics and retrieve the
      * set of non-persisted objects.
@@ -635,6 +638,13 @@ class MasterClient {
     [[nodiscard]] std::vector<tl::expected<void, ErrorCode>>
     BatchEvictDiskReplica(const std::vector<std::string>& keys,
                           ReplicaType replica_type);
+
+    [[nodiscard]] tl::expected<std::vector<LocalDiskRemoval>, ErrorCode>
+    PollLocalDiskRemovals();
+
+    [[nodiscard]] tl::expected<void, ErrorCode> AckLocalDiskRemoval(
+        const std::string& key, bool success,
+        const std::string& tenant_id = "default");
     [[nodiscard]] std::vector<tl::expected<void, ErrorCode>>
     BatchEvictDiskReplica(const std::vector<std::string>& keys,
                           const std::string& tenant_id,

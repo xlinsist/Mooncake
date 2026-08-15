@@ -684,6 +684,14 @@ class MasterServiceHATest : public ::testing::Test {
         return access.getSsdUsedBytes(segment_name);
     }
 
+    static int64_t GetLocalDiskUsedBytesForTesting(
+        MasterService& service, const UUID& client_id) {
+        auto access = service.segment_manager_.getLocalDiskSegmentAccess();
+        return access.getClientLocalDiskSegment()
+            .at(client_id)
+            ->ssd_used_bytes.load(std::memory_order_relaxed);
+    }
+
     std::vector<std::string> policy_files_;
     int next_policy_file_{0};
 };
@@ -1150,6 +1158,7 @@ TEST_F(MasterServiceHATest, RestoreFromStandbyPreservesNoFBufferDescriptor) {
 
     const std::string endpoint = "standby_restore_nof_endpoint";
     const size_t size = 4096;
+    const size_t segment_size = size * 2;
     const uintptr_t address = 0x12345000;
     Replica::Descriptor replica;
     replica.id = 1;
@@ -1181,9 +1190,44 @@ TEST_F(MasterServiceHATest, RestoreFromStandbyPreservesNoFBufferDescriptor) {
 
     auto public_replicas =
         service.GetReplicaList("standby_restore_nof_key", kDefaultTenant);
+    ASSERT_FALSE(public_replicas.has_value());
+    EXPECT_EQ(public_replicas.error(), ErrorCode::REPLICA_IS_NOT_READY);
+
+#ifdef USE_NOF
+    auto segment =
+        MakeNoFSegment("standby_restore_nof", endpoint, address, segment_size);
+    auto invalid_segment = segment;
+    invalid_segment.base += size;
+    auto failed_remount =
+        service.ReMountNoFSegment({invalid_segment}, generate_uuid());
+    ASSERT_FALSE(failed_remount.has_value());
+    EXPECT_EQ(failed_remount.error(), ErrorCode::INVALID_PARAMS);
+    public_replicas =
+        service.GetReplicaList("standby_restore_nof_key", kDefaultTenant);
+    ASSERT_FALSE(public_replicas.has_value());
+    EXPECT_EQ(public_replicas.error(), ErrorCode::REPLICA_IS_NOT_READY);
+
+    ASSERT_TRUE(service.ReMountNoFSegment({segment}, generate_uuid()));
+    public_replicas =
+        service.GetReplicaList("standby_restore_nof_key", kDefaultTenant);
     ASSERT_TRUE(public_replicas.has_value());
     ASSERT_EQ(public_replicas->replicas.size(), 1);
     EXPECT_TRUE(public_replicas->replicas.front().is_nof_replica());
+
+    ReplicateConfig config;
+    config.replica_num = 0;
+    config.nof_replica_num = 1;
+    config.preferred_nof_segments = {segment.name};
+    auto next = service.PutStart(generate_uuid(), "standby_restore_nof_next",
+                                 kDefaultTenant, size, config);
+    ASSERT_TRUE(next.has_value());
+    ASSERT_EQ(next->size(), 1);
+    ASSERT_TRUE(next->front().is_nof_replica());
+    EXPECT_EQ(next->front()
+                  .get_nof_descriptor()
+                  .buffer_descriptor.buffer_address_,
+              address + size);
+#endif
 }
 
 TEST_F(MasterServiceHATest, OplogDisabledByDefaultDoesNotCreateWriter) {
@@ -3457,6 +3501,158 @@ TEST_F(MasterServiceHATest, EvictDiskReplicaWritesBatchRecordOpLog) {
     EXPECT_EQ(key, batch.entries[0].object_key);
     EXPECT_EQ(4u, batch.entries[0].sequence_id);
     EXPECT_FALSE(batch.entries[0].payload.empty());
+}
+
+TEST_F(MasterServiceHATest, MultiOwnerLocalRemovalSerializesAcksUntilDurable) {
+    const std::string cluster_id = "multi_owner_local_removal_ack_cluster";
+    auto backend = std::make_shared<FakeBatchHaKvBackend>();
+    auto service_config = MasterServiceConfig::builder()
+                              .set_default_kv_lease_ttl(50)
+                              .set_enable_ha(true)
+                              .set_enable_oplog(true)
+                              .set_cluster_id(cluster_id)
+                              .set_oplog_batch_max_entries(1)
+                              .set_enable_offload(true)
+                              .build();
+    MasterService service(service_config);
+    auto* writer = InstallGatedWriter(service, backend);
+    OpLogBatchStorage storage(cluster_id, *backend);
+    OpLogBatchRecord batch;
+
+    const UUID owner_a{101, 102};
+    const UUID owner_b{103, 104};
+    const std::string key = "multi-owner-local-removal";
+    Replica replica_a(owner_a, 1024, "owner-a", "backend-a", "locator-a", 1,
+                      ReplicaStatus::COMPLETE);
+    Replica replica_b(owner_b, 1024, "owner-b", "backend-b", "locator-b", 2,
+                      ReplicaStatus::COMPLETE);
+    ASSERT_TRUE(service.AddReplica(owner_a, key, kDefaultTenant, replica_a));
+    ReadBatchEventually(storage, 1, batch);
+    ASSERT_TRUE(service.AddReplica(owner_b, key, kDefaultTenant, replica_b));
+    ReadBatchEventually(storage, 2, batch);
+
+    ASSERT_TRUE(service.Remove(key, kDefaultTenant, true));
+    ReadBatchEventually(storage, 3, batch);
+    ASSERT_TRUE(writer->PauseCallbacksAfter(batch.last_seq));
+
+    ASSERT_TRUE(
+        service.AckLocalDiskRemoval(owner_a, key, kDefaultTenant, true));
+    ReadBatchEventually(storage, 4, batch);
+    ASSERT_EQ(batch.entries.size(), 1);
+    EXPECT_EQ(batch.entries.front().op_type, OpType::PUT_END);
+
+    auto concurrent_ack =
+        service.AckLocalDiskRemoval(owner_b, key, kDefaultTenant, true);
+    ASSERT_FALSE(concurrent_ack);
+    EXPECT_EQ(concurrent_ack.error(), ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+
+    ASSERT_TRUE(writer->RunCallbacksThrough(batch.last_seq));
+    ASSERT_TRUE(
+        service.AckLocalDiskRemoval(owner_b, key, kDefaultTenant, true));
+    ReadBatchEventually(storage, 5, batch);
+    ASSERT_EQ(batch.entries.size(), 1);
+    EXPECT_EQ(batch.entries.front().op_type, OpType::REMOVE);
+    ASSERT_TRUE(writer->RunCallbacksThrough(batch.last_seq));
+    EXPECT_EQ(service.GetKeyCount(), 0);
+}
+
+TEST_F(MasterServiceHATest, BackendRebindRollsBackWhenOpLogReservationFails) {
+    const std::string cluster_id = "backend_rebind_rollback_cluster";
+    auto backend = std::make_shared<FakeBatchHaKvBackend>();
+    auto service_config = MasterServiceConfig::builder()
+                              .set_default_kv_lease_ttl(50)
+                              .set_enable_ha(true)
+                              .set_enable_oplog(true)
+                              .set_cluster_id(cluster_id)
+                              .set_oplog_batch_max_entries(1)
+                              .set_enable_offload(true)
+                              .build();
+    MasterService service(service_config);
+    ASSERT_EQ(ErrorCode::OK, service.SetBatchOpLogBackendForTesting(backend));
+
+    const UUID original_owner{201, 202};
+    const UUID restarted_owner{203, 204};
+    const std::string key = "backend-rebind-rollback";
+    const std::string backend_id = "stable-backend";
+    const std::string original_endpoint = "owner-a";
+    Replica replica(original_owner, 1024, original_endpoint, backend_id,
+                    "locator-a", 1, ReplicaStatus::COMPLETE);
+    ASSERT_TRUE(
+        service.AddReplica(original_owner, key, kDefaultTenant, replica));
+
+    OpLogBatchStorage storage(cluster_id, *backend);
+    OpLogBatchRecord batch;
+    ReadBatchEventually(storage, 1, batch);
+    ASSERT_TRUE(service
+                    .MountLocalDiskSegment(restarted_owner,
+                                           /*enable_offloading=*/false)
+                    .has_value());
+    SetLocalDiskUsedBytesForTesting(service, restarted_owner, 99);
+
+    auto held_reservation = ReserveBatchSlotForTesting(service);
+    ASSERT_TRUE(held_reservation.has_value())
+        << toString(held_reservation.error());
+
+    auto rebound =
+        service.RebindLocalDiskBackend(restarted_owner, backend_id, "owner-b");
+    ASSERT_FALSE(rebound.has_value());
+    EXPECT_EQ(ErrorCode::TASK_PENDING_LIMIT_EXCEEDED, rebound.error());
+    EXPECT_EQ(99,
+              GetLocalDiskUsedBytesForTesting(service, restarted_owner));
+
+    auto descriptors =
+        ReplicaDescriptorsForTesting(service, kDefaultTenant, key);
+    ASSERT_EQ(1u, descriptors.size());
+    const auto local = descriptors.front().get_local_disk_descriptor();
+    EXPECT_EQ(original_owner, local.client_id);
+    EXPECT_EQ(original_endpoint, local.transport_endpoint);
+}
+
+TEST_F(MasterServiceHATest,
+       BackendRebindReconstructsMaterializedLocalDiskUsage) {
+    MasterService service(MasterServiceConfig::builder()
+                              .set_enable_offload(true)
+                              .build());
+
+    const UUID original_owner{211, 212};
+    const UUID restarted_owner{213, 214};
+    const std::string backend_id = "stable-capacity-backend";
+    Replica complete(original_owner, 1024, "owner-a", backend_id,
+                     "locator-complete", 1, ReplicaStatus::COMPLETE);
+    Replica removed(original_owner, 2048, "owner-a", backend_id,
+                    "locator-removed", 2, ReplicaStatus::COMPLETE);
+    Replica processing(original_owner, 4096, "owner-a", backend_id,
+                       "locator-processing", 3, ReplicaStatus::PROCESSING);
+    Replica unmaterialized(original_owner, 8192, "owner-a", backend_id, "", 4,
+                           ReplicaStatus::PROCESSING);
+    ASSERT_TRUE(service.AddReplica(original_owner, "complete", kDefaultTenant,
+                                   complete));
+    ASSERT_TRUE(service.AddReplica(original_owner, "removed", kDefaultTenant,
+                                   removed));
+    ASSERT_TRUE(service.AddReplica(original_owner, "processing", kDefaultTenant,
+                                   processing));
+    ASSERT_TRUE(service.AddReplica(original_owner, "unmaterialized",
+                                   kDefaultTenant, unmaterialized));
+    ASSERT_EQ(1u, MarkCompletedReplicasRemovedForTesting(
+                      service, kDefaultTenant, "removed")
+                      .size());
+    ASSERT_TRUE(service
+                    .MountLocalDiskSegment(restarted_owner,
+                                           /*enable_offloading=*/false)
+                    .has_value());
+
+    auto rebound = service.RebindLocalDiskBackend(restarted_owner, backend_id,
+                                                  "owner-b");
+    ASSERT_TRUE(rebound.has_value()) << toString(rebound.error());
+    EXPECT_EQ(4, rebound.value());
+    EXPECT_EQ(7168,
+              GetLocalDiskUsedBytesForTesting(service, restarted_owner));
+
+    rebound = service.RebindLocalDiskBackend(restarted_owner, backend_id,
+                                             "owner-b");
+    ASSERT_TRUE(rebound.has_value()) << toString(rebound.error());
+    EXPECT_EQ(7168,
+              GetLocalDiskUsedBytesForTesting(service, restarted_owner));
 }
 
 TEST_F(MasterServiceHATest, EvictDiskReplicaReleasesLocalDiskAfterDurable) {

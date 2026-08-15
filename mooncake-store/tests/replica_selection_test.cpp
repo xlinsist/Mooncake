@@ -89,6 +89,17 @@ TEST_F(ReplicaSelectionTest, LocalMemoryAlwaysWins) {
         "nodeB");  // locality beats protocol
 }
 
+TEST_F(ReplicaSelectionTest, LocalMemoryWinsOverEarlierLocalNof) {
+    std::unordered_set<std::string> local = {"node-local"};
+    std::vector<Replica::Descriptor> reps = {
+        MakeNoF("node-local"),
+        MakeMemory("node-local", "tcp"),
+    };
+    const auto* selected = SelectBestReplica(reps, local);
+    ASSERT_NE(selected, nullptr);
+    EXPECT_TRUE(selected->is_memory_replica());
+}
+
 TEST_F(ReplicaSelectionTest, ScoringOffKeepsFirstRemoteMemory) {
     // No scorer injected and env not set -> must return the FIRST remote
     // MEMORY.

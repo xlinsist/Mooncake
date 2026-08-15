@@ -18,6 +18,23 @@ class FileStorage {
 
     tl::expected<void, ErrorCode> Init();
 
+    tl::expected<std::string, ErrorCode> GetDirectBackendId() const;
+
+    tl::expected<StagedLocalObject, ErrorCode> StageDirectObject(
+        const std::string& key, const std::vector<Slice>& slices);
+
+    tl::expected<LocalObjectLocator, ErrorCode> CommitDirectObject(
+        const StagedLocalObject& staged);
+
+    tl::expected<void, ErrorCode> AbortDirectObject(
+        const StagedLocalObject& staged);
+
+    tl::expected<void, ErrorCode> LoadDirectObject(
+        const LocalObjectLocator& locator, Slice destination);
+
+    tl::expected<void, ErrorCode> RemoveDirectObject(
+        const LocalObjectLocator& locator);
+
     void RemoveAll();
 
     /**
@@ -52,6 +69,12 @@ class FileStorage {
     tl::expected<LocalBatchResult, ErrorCode> BatchGetLocal(
         const std::vector<std::string>& keys,
         const std::vector<int64_t>& sizes);
+
+    tl::expected<BatchGetResult, ErrorCode> BatchGetLocalDiskObjects(
+        const std::vector<LocalDiskReadRequest>& requests);
+
+    tl::expected<LocalBatchResult, ErrorCode> BatchGetLocalDiskObjectsLocal(
+        const std::vector<LocalDiskReadRequest>& requests);
 
     [[nodiscard]] bool HasPinnedRestoreArena() const {
         return pinned_restore_arena_allocator_ != nullptr;
@@ -165,6 +188,10 @@ class FileStorage {
         const std::vector<std::string>& keys, const std::vector<int64_t>& sizes,
         bool prefer_pinned);
 
+    tl::expected<std::shared_ptr<AllocatedBatch>, ErrorCode>
+    LoadLocalDiskObjects(const std::vector<LocalDiskReadRequest>& requests,
+                         bool prefer_pinned);
+
     void ClientBufferGCThreadFunc();
 
     /**
@@ -182,6 +209,7 @@ class FileStorage {
     PinnedBufferPool::Buffer pinned_restore_arena_;
     std::shared_ptr<ClientBufferAllocator> pinned_restore_arena_allocator_;
     std::shared_ptr<StorageBackendInterface> storage_backend_;
+    std::shared_ptr<StorageBackendInterface> direct_local_backend_;
     std::shared_ptr<ClientBufferAllocator> client_buffer_allocator_;
     mutable Mutex client_buffer_mutex_;
     std::unordered_map<uint64_t, std::shared_ptr<AllocatedBatch>> GUARDED_BY(

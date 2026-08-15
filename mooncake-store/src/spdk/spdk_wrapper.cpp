@@ -121,14 +121,19 @@ bool SpdkWrapper::InitializeEnv() {
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
     opts.name = "mooncake";
+    opts.env_context = std::getenv("MC_SPDK_ENV_CONTEXT");
 
     int rc = spdk_env_init(&opts);
-    if (rc != 0) {
+    if (rc != 0 && rc != -EALREADY) {
         fprintf(stderr, "SPDK init failed: %d\n", rc);
         return false;
     }
+    if (rc == -EALREADY) {
+        LOG(INFO) << "SPDK environment is already initialized; reusing it";
+    }
 
     // Mark SPDK as initialized.
+    owns_environment_.store(rc == 0, std::memory_order_release);
     initialized.store(true, std::memory_order_release);
     return true;
 }
@@ -165,7 +170,9 @@ void SpdkWrapper::Cleanup() {
             }
             probe_buffers_.clear();
         }
-        spdk_env_fini();
+        if (owns_environment_.exchange(false, std::memory_order_acq_rel)) {
+            spdk_env_fini();
+        }
         initialized.store(false, std::memory_order_release);
     }
 }

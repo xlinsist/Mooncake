@@ -683,6 +683,21 @@ tl::expected<void, SerializationError> Serializer<Replica>::serialize(
             }
             break;
         }
+        case ReplicaType::NOF_SSD: {
+            const auto *nof_data = std::get_if<NoFReplicaData>(&replica.data_);
+            if (!nof_data || !nof_data->buffer) {
+                return tl::unexpected(SerializationError(
+                    ErrorCode::SERIALIZE_FAIL,
+                    "serialize_msgpack Replica missing NoFReplicaData"));
+            }
+            const auto descriptor = nof_data->buffer->get_descriptor();
+            packer.pack_array(4);
+            packer.pack(descriptor.size_);
+            packer.pack(descriptor.buffer_address_);
+            packer.pack(descriptor.protocol_);
+            packer.pack(descriptor.transport_endpoint_);
+            break;
+        }
         case ReplicaType::DISK: {
             const auto *disk_data =
                 std::get_if<DiskReplicaData>(&replica.data_);
@@ -705,11 +720,17 @@ tl::expected<void, SerializationError> Serializer<Replica>::serialize(
                     ErrorCode::DESERIALIZE_FAIL,
                     "serialize_msgpack Replica missing LocalDiskReplicaData"));
             }
-            // Format: [client_id_str, object_size, transport_endpoint]
-            packer.pack_array(3);
+            // Format: [client_id_str, object_size, transport_endpoint,
+            // backend_id, locator, generation, host_id, removal_retry_count]
+            packer.pack_array(8);
             packer.pack(UuidToString(local_data->client_id));
             packer.pack(static_cast<uint64_t>(local_data->object_size));
             packer.pack(local_data->transport_endpoint);
+            packer.pack(local_data->backend_id);
+            packer.pack(local_data->locator);
+            packer.pack(local_data->generation);
+            packer.pack(local_data->host_id);
+            packer.pack(local_data->removal_retry_count);
             break;
         }
         default:
@@ -768,6 +789,28 @@ auto Serializer<Replica>::deserialize(const msgpack::object &obj,
                 std::move(buffer_result.value()), status);
             break;
         }
+        case static_cast<int8_t>(ReplicaType::NOF_SSD): {
+            const auto &payload = array_items[3];
+            if (payload.type != msgpack::type::ARRAY ||
+                payload.via.array.size != 4) {
+                return tl::unexpected(SerializationError(
+                    ErrorCode::DESERIALIZE_FAIL,
+                    "deserialize_msgpack Replica NOF_SSD payload is not "
+                    "valid array[4]"));
+            }
+            auto *payload_items = payload.via.array.ptr;
+            AllocatedBuffer::Descriptor descriptor;
+            descriptor.size_ = payload_items[0].as<uint64_t>();
+            descriptor.buffer_address_ = payload_items[1].as<uint64_t>();
+            descriptor.protocol_ = payload_items[2].as<std::string>();
+            descriptor.transport_endpoint_ = payload_items[3].as<std::string>();
+            auto allocator = std::make_shared<DummyBufferAllocator>(
+                descriptor.transport_endpoint_, descriptor.transport_endpoint_);
+            replica = std::make_shared<Replica>(
+                std::make_unique<AllocatedBuffer>(allocator, descriptor),
+                status, ReplicaType::NOF_SSD);
+            break;
+        }
         case static_cast<int8_t>(ReplicaType::DISK): {
             const auto &payload = array_items[3];
             if (payload.type != msgpack::type::ARRAY ||
@@ -788,16 +831,33 @@ auto Serializer<Replica>::deserialize(const msgpack::object &obj,
         case static_cast<int8_t>(ReplicaType::LOCAL_DISK): {
             const auto &payload = array_items[3];
             if (payload.type != msgpack::type::ARRAY ||
-                payload.via.array.size != 3) {
+                (payload.via.array.size != 3 && payload.via.array.size != 6 &&
+                 payload.via.array.size != 7 && payload.via.array.size != 8)) {
                 return tl::unexpected(
                     SerializationError(ErrorCode::DESERIALIZE_FAIL,
                                        "deserialize_msgpack Replica LOCAL_DISK "
-                                       "payload is not valid array[3]"));
+                                       "payload is not valid array[3|6|7|8]"));
             }
             auto *payload_items = payload.via.array.ptr;
             std::string client_id_str = payload_items[0].as<std::string>();
             uint64_t object_size = payload_items[1].as<uint64_t>();
             std::string transport_endpoint = payload_items[2].as<std::string>();
+            std::string backend_id;
+            std::string locator;
+            uint64_t generation = 0;
+            std::string host_id;
+            uint32_t removal_retry_count = 0;
+            if (payload.via.array.size >= 6) {
+                backend_id = payload_items[3].as<std::string>();
+                locator = payload_items[4].as<std::string>();
+                generation = payload_items[5].as<uint64_t>();
+            }
+            if (payload.via.array.size >= 7) {
+                host_id = payload_items[6].as<std::string>();
+            }
+            if (payload.via.array.size == 8) {
+                removal_retry_count = payload_items[7].as<uint32_t>();
+            }
 
             UUID client_id;
             if (!StringToUuid(client_id_str, client_id)) {
@@ -809,7 +869,11 @@ auto Serializer<Replica>::deserialize(const msgpack::object &obj,
             }
 
             replica = std::make_shared<Replica>(
-                client_id, object_size, std::move(transport_endpoint), status);
+                client_id, object_size, std::move(transport_endpoint),
+                std::move(backend_id), std::move(locator), generation,
+                std::move(host_id), status);
+            std::get<LocalDiskReplicaData>(replica->data_).removal_retry_count =
+                removal_retry_count;
             break;
         }
         default:

@@ -110,6 +110,62 @@ TEST_F(OpLogApplierTest, TestApplyRemove) {
     EXPECT_FALSE(mock_metadata_store_->Exists("key1"));
 }
 
+TEST_F(OpLogApplierTest, RemovedLocalDiskDescriptorsSurvivePutEndReplay) {
+    MetadataPayload payload;
+    payload.client_id = {1, 2};
+    payload.size = 4096;
+    for (uint64_t generation = 1; generation <= 2; ++generation) {
+        LocalDiskDescriptor local;
+        local.client_id = {generation, generation + 10};
+        local.object_size = payload.size;
+        local.transport_endpoint = "owner-" + std::to_string(generation);
+        local.backend_id = "backend-" + std::to_string(generation);
+        local.locator = "locator-" + std::to_string(generation);
+        local.generation = generation;
+        payload.replicas.push_back(
+            Replica::Descriptor{.id = generation,
+                                .descriptor_variant = std::move(local),
+                                .status = ReplicaStatus::REMOVED});
+    }
+    auto encoded = struct_pack::serialize(payload);
+    ASSERT_TRUE(applier_->ApplyOpLogEntry(
+        MakeEntry(1, OpType::PUT_END, "removing-key",
+                  std::string(encoded.begin(), encoded.end()))));
+
+    auto metadata = mock_metadata_store_->GetMetadata("removing-key");
+    ASSERT_TRUE(metadata);
+    ASSERT_EQ(metadata->replicas.size(), 2);
+    for (size_t index = 0; index < metadata->replicas.size(); ++index) {
+        const auto& replica = metadata->replicas[index];
+        ASSERT_TRUE(replica.is_local_disk_replica());
+        EXPECT_EQ(replica.status, ReplicaStatus::REMOVED);
+        const auto& local = replica.get_local_disk_descriptor();
+        EXPECT_EQ(local.backend_id.value_or(""),
+                  "backend-" + std::to_string(index + 1));
+        EXPECT_EQ(local.locator.value_or(""),
+                  "locator-" + std::to_string(index + 1));
+        EXPECT_EQ(local.generation.value_or(0), index + 1);
+    }
+
+    MetadataPayload remaining = payload;
+    remaining.replicas.erase(remaining.replicas.begin());
+    encoded = struct_pack::serialize(remaining);
+    ASSERT_TRUE(applier_->ApplyOpLogEntry(
+        MakeEntry(2, OpType::PUT_END, "removing-key",
+                  std::string(encoded.begin(), encoded.end()))));
+    metadata = mock_metadata_store_->GetMetadata("removing-key");
+    ASSERT_TRUE(metadata);
+    ASSERT_EQ(metadata->replicas.size(), 1);
+    EXPECT_EQ(
+        metadata->replicas.front().get_local_disk_descriptor().locator.value_or(
+            ""),
+        "locator-2");
+
+    ASSERT_TRUE(applier_->ApplyOpLogEntry(
+        MakeEntry(3, OpType::REMOVE, "removing-key", "")));
+    EXPECT_FALSE(mock_metadata_store_->Exists("removing-key"));
+}
+
 TEST_F(OpLogApplierTest, TestApplyOpLogEntry_InvalidOpType) {
     OpLogEntry entry =
         MakeEntry(1, OpType::PUT_END, "key1", MakeValidPayload());

@@ -8,11 +8,77 @@
 
 namespace mooncake {
 
+struct ManagedPlacementStartRequest {
+    UUID client_id;
+    std::string key;
+    uint64_t value_length{0};
+    ReplicateConfig config;
+    std::string tenant_id{"default"};
+};
+YLT_REFL(ManagedPlacementStartRequest, client_id, key, value_length, config,
+         tenant_id);
+
+struct ManagedPlacementBatchStartRequest {
+    UUID client_id;
+    std::vector<std::string> keys;
+    std::vector<uint64_t> value_lengths;
+    ReplicateConfig config;
+    std::string tenant_id{"default"};
+};
+YLT_REFL(ManagedPlacementBatchStartRequest, client_id, keys, value_lengths,
+         config, tenant_id);
+
 struct ObjectMeta {
     std::string key;
     std::optional<uint64_t> object_checksum;
+    struct_pack::compatible<std::string, 20260815>
+        local_disk_transport_endpoint;
+    struct_pack::compatible<std::string, 20260816> local_disk_backend_id;
+    struct_pack::compatible<std::string, 20260817> local_disk_locator;
+    struct_pack::compatible<uint64_t, 20260818> local_disk_generation;
 };
-YLT_REFL(ObjectMeta, key, object_checksum);
+YLT_REFL(ObjectMeta, key, object_checksum, local_disk_transport_endpoint,
+         local_disk_backend_id, local_disk_locator, local_disk_generation);
+
+struct PlacementEndRequest {
+    UUID client_id;
+    ObjectMeta object_meta;
+    ReplicaType replica_type{ReplicaType::ALL};
+    std::string tenant_id{"default"};
+};
+YLT_REFL(PlacementEndRequest, client_id, object_meta, replica_type, tenant_id);
+
+struct PlacementBatchEndRequest {
+    UUID client_id;
+    std::vector<ObjectMeta> object_metas;
+    ReplicaType replica_type{ReplicaType::ALL};
+    std::string tenant_id{"default"};
+};
+YLT_REFL(PlacementBatchEndRequest, client_id, object_metas, replica_type,
+         tenant_id);
+
+struct LocalDiskRemoval {
+    std::string tenant_id{"default"};
+    std::string key;
+    LocalDiskDescriptor descriptor;
+};
+YLT_REFL(LocalDiskRemoval, tenant_id, key, descriptor);
+
+struct LocalDiskReadRequest {
+    std::string storage_key;
+    int64_t size = 0;
+    struct_pack::compatible<std::string, 20260816> backend_id;
+    struct_pack::compatible<std::string, 20260817> locator;
+    struct_pack::compatible<uint64_t, 20260818> object_size;
+    struct_pack::compatible<uint64_t, 20260819> generation;
+};
+YLT_REFL(LocalDiskReadRequest, storage_key, size, backend_id, locator,
+         object_size, generation);
+
+struct LocalDiskReadBatchRequest {
+    std::vector<LocalDiskReadRequest> requests;
+};
+YLT_REFL(LocalDiskReadBatchRequest, requests);
 
 /**
  * @brief Response structure for Ping operation

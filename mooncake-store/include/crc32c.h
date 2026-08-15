@@ -3,6 +3,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
+#include <string_view>
 
 namespace mooncake {
 
@@ -48,6 +51,13 @@ inline uint32_t Crc32cValue(const void* data, size_t len) {
     Crc32c crc;
     crc.Extend(data, len);
     return crc.Final();
+}
+
+inline std::string SafeObjectKeyId(std::string_view key) {
+    char encoded[9];
+    std::snprintf(encoded, sizeof(encoded), "%08x",
+                  Crc32cValue(key.data(), key.size()));
+    return encoded;
 }
 
 }  // namespace mooncake

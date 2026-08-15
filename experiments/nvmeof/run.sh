@@ -24,8 +24,15 @@ run_store_python() {
     CLIENT_RDMA_DEVICE="$CLIENT_RDMA_DEVICE" LOCAL_HOSTNAME="$LOCAL_HOSTNAME" \
     METADATA_URL="$METADATA_URL" MASTER_ADDR="$MASTER_ADDR" \
     GLOBAL_SEGMENT_SIZE="$GLOBAL_SEGMENT_SIZE" \
-    LOCAL_BUFFER_SIZE="$LOCAL_BUFFER_SIZE" NQN="$NQN" NSID="$NSID" \
-    TRSVCID="$TRSVCID" TEST_BYTES="$TEST_BYTES" python3 "$@"
+    LOCAL_BUFFER_SIZE="$LOCAL_BUFFER_SIZE" \
+    ENABLE_SSD_OFFLOAD="${ENABLE_SSD_OFFLOAD:-0}" \
+    SSD_OFFLOAD_PATH="${SSD_OFFLOAD_PATH:-}" NQN="$NQN" NSID="$NSID" \
+    TRSVCID="$TRSVCID" TEST_BYTES="$TEST_BYTES" \
+    TRANSPARENT_RUN_ID="${TRANSPARENT_RUN_ID:-}" python3 "$@"
+}
+
+require_transparent_run_id() {
+  : "${TRANSPARENT_RUN_ID:?set TRANSPARENT_RUN_ID to a unique acceptance batch ID}"
 }
 
 inventory_one() {
@@ -530,6 +537,53 @@ case ${1:-help} in
       "python3 -m mooncake.http_metadata_server --host=$CLIENT_ADDR --port=8080 2>&1 | tee $RESULT_DIR/metadata.log"
     ;;
   correctness) run_store_python "$(dirname "$0")/correctness.py" run --output "$RESULT_DIR/correctness.json" ;;
+  transparent-local) require_transparent_run_id; ENABLE_SSD_OFFLOAD=1 run_store_python "$(dirname "$0")/correctness.py" transparent --expected-targets local_nvme --output "$RESULT_DIR/transparent-local.json" ;;
+  transparent-remote) require_transparent_run_id; run_store_python "$(dirname "$0")/correctness.py" transparent --expected-targets remote_nof --output "$RESULT_DIR/transparent-remote.json" ;;
+  transparent-round-robin) require_transparent_run_id; ENABLE_SSD_OFFLOAD=1 run_store_python "$(dirname "$0")/correctness.py" transparent --expected-targets local_nvme,remote_nof --output "$RESULT_DIR/transparent-round-robin.json" ;;
+  transparent-local-unavailable) require_transparent_run_id; run_store_python "$(dirname "$0")/correctness.py" transparent-unavailable --expected-target local_nvme --output "$RESULT_DIR/transparent-local-unavailable.json" ;;
+  transparent-remote-unavailable) require_transparent_run_id; run_store_python "$(dirname "$0")/correctness.py" transparent-unavailable --expected-target remote_nof --output "$RESULT_DIR/transparent-remote-unavailable.json" ;;
+  transparent-restart-seed)
+    require_transparent_run_id
+    : "${TRANSPARENT_RESTART_SCENARIO:?set TRANSPARENT_RESTART_SCENARIO}"
+    : "${TRANSPARENT_RESTART_TARGETS:?set TRANSPARENT_RESTART_TARGETS}"
+    restart_witness_args=()
+    if [[ $TRANSPARENT_RESTART_SCENARIO != client_restart ]]; then
+      : "${TRANSPARENT_RESTART_WITNESS:?set TRANSPARENT_RESTART_WITNESS to the current service incarnation identity}"
+      restart_witness_args=(--witness "$TRANSPARENT_RESTART_WITNESS")
+    fi
+    [[ $TRANSPARENT_RESTART_TARGETS != *local_nvme* ]] || ENABLE_SSD_OFFLOAD=1
+    run_store_python "$(dirname "$0")/correctness.py" transparent-restart-seed --scenario "$TRANSPARENT_RESTART_SCENARIO" --expected-targets "$TRANSPARENT_RESTART_TARGETS" --count "${TRANSPARENT_RESTART_COUNT:-12}" "${restart_witness_args[@]}" --output "$RESULT_DIR/transparent-restart-seed-$TRANSPARENT_RESTART_SCENARIO.json"
+    ;;
+  transparent-restart-verify)
+    require_transparent_run_id
+    : "${TRANSPARENT_RESTART_SCENARIO:?set TRANSPARENT_RESTART_SCENARIO}"
+    restart_witness_args=()
+    if [[ $TRANSPARENT_RESTART_SCENARIO != client_restart ]]; then
+      : "${TRANSPARENT_RESTART_WITNESS:?set TRANSPARENT_RESTART_WITNESS to the new service incarnation identity}"
+      restart_witness_args=(--witness "$TRANSPARENT_RESTART_WITNESS")
+    fi
+    [[ -f $RESULT_DIR/transparent-restart-seed-$TRANSPARENT_RESTART_SCENARIO.json ]] || die "restart seed manifest is missing"
+    ! grep -Fq '"local_nvme"' "$RESULT_DIR/transparent-restart-seed-$TRANSPARENT_RESTART_SCENARIO.json" || ENABLE_SSD_OFFLOAD=1
+    run_store_python "$(dirname "$0")/correctness.py" transparent-restart-verify --manifest "$RESULT_DIR/transparent-restart-seed-$TRANSPARENT_RESTART_SCENARIO.json" "${restart_witness_args[@]}" --output "$RESULT_DIR/transparent-restart-$TRANSPARENT_RESTART_SCENARIO.json"
+    ;;
+  transparent-benchmark)
+    require_transparent_run_id
+    [[ ${TRANSPARENT_BENCH_TARGET:?set TRANSPARENT_BENCH_TARGET=local_nvme or remote_nof} != local_nvme ]] || ENABLE_SSD_OFFLOAD=1
+    run_store_python "$(dirname "$0")/correctness.py" transparent-benchmark --mode "${TRANSPARENT_BENCH_MODE:-transparent}" --target "$TRANSPARENT_BENCH_TARGET" --count "${TRANSPARENT_BENCH_COUNT:-100}" --size "${TRANSPARENT_BENCH_SIZE:-131072}" --output "$RESULT_DIR/transparent-benchmark-${TRANSPARENT_BENCH_MODE:-transparent}-${TRANSPARENT_BENCH_TARGET}.json"
+    ;;
+  transparent-overhead)
+    require_transparent_run_id
+    [[ ${TRANSPARENT_BENCH_TARGET:?set TRANSPARENT_BENCH_TARGET=local_nvme or remote_nof} != local_nvme ]] || ENABLE_SSD_OFFLOAD=1
+    run_store_python "$(dirname "$0")/correctness.py" transparent-overhead --target "$TRANSPARENT_BENCH_TARGET" --count "${TRANSPARENT_BENCH_COUNT:-100}" --size "${TRANSPARENT_BENCH_SIZE:-131072}" --output "$RESULT_DIR/transparent-overhead-$TRANSPARENT_BENCH_TARGET.json"
+    ;;
+  transparent-software-verification)
+    require_transparent_run_id
+    python3 "$(dirname "$0")/correctness.py" transparent-software-verification --repo-root "$(cd "$(dirname "$0")/../.." && pwd)" --build-dir "$BUILD_DIR" --output "$RESULT_DIR/transparent-software-verification.json"
+    ;;
+  transparent-acceptance)
+    require_transparent_run_id
+    python3 "$(dirname "$0")/correctness.py" transparent-acceptance --result-dir "$RESULT_DIR" --run-id "$TRANSPARENT_RUN_ID" --output "$RESULT_DIR/transparent-acceptance.json"
+    ;;
   stability) run_store_python "$(dirname "$0")/correctness.py" stability --seconds "${STABILITY_SECONDS:-60}" --output "$RESULT_DIR/stability.json" ;;
   nof-benchmark) run_nof_matrix ;;
   characterize) run_characterization ;;

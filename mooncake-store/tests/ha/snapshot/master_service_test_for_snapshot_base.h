@@ -43,6 +43,16 @@ namespace mooncake::test {
  */
 class MasterServiceSnapshotTestBase : public ::testing::Test {
    protected:
+    virtual void ValidateRestoredService(MasterService&) {}
+
+    void SetLocalDiskAccounting(MasterService& service, const UUID& client_id,
+                                int64_t capacity, int64_t used) {
+        auto access = service.segment_manager_.getLocalDiskSegmentAccess();
+        auto segment = access.getClientLocalDiskSegment().at(client_id);
+        segment->ssd_total_capacity_bytes = capacity;
+        segment->ssd_used_bytes.store(used, std::memory_order_relaxed);
+    }
+
     // ==================== Temp Dir Accessor ====================
 
     const std::string& tmp_dir() const { return tmp_dir_; }
@@ -74,6 +84,8 @@ class MasterServiceSnapshotTestBase : public ::testing::Test {
     // LocalDiskSegment state for comparison
     struct LocalDiskSegmentState {
         bool enable_offloading = false;
+        int64_t ssd_total_capacity_bytes = 0;
+        int64_t ssd_used_bytes = 0;
         std::map<std::string, OffloadTaskItem>
             offloading_objects;  // storage key -> task (sorted)
     };
@@ -286,6 +298,10 @@ class MasterServiceSnapshotTestBase : public ::testing::Test {
                  access.getClientLocalDiskSegment()) {
                 LocalDiskSegmentState seg_state;
                 seg_state.enable_offloading = segment->enable_offloading;
+                seg_state.ssd_total_capacity_bytes =
+                    segment->ssd_total_capacity_bytes;
+                seg_state.ssd_used_bytes = segment->ssd_used_bytes.load(
+                    std::memory_order_relaxed);
                 // Copy offloading_objects to sorted map
                 std::lock_guard<Mutex> lock(segment->offloading_mutex_);
                 for (const auto& [key, task] : segment->offloading_objects) {
@@ -369,7 +385,13 @@ class MasterServiceSnapshotTestBase : public ::testing::Test {
             const auto& lb = b.get_local_disk_descriptor();
             return la.client_id == lb.client_id &&
                    la.object_size == lb.object_size &&
-                   la.transport_endpoint == lb.transport_endpoint;
+                   la.transport_endpoint == lb.transport_endpoint &&
+                   la.backend_id.value_or("") == lb.backend_id.value_or("") &&
+                   la.locator.value_or("") == lb.locator.value_or("") &&
+                   la.generation.value_or(0) == lb.generation.value_or(0) &&
+                   la.host_id.value_or("") == lb.host_id.value_or("") &&
+                   la.removal_retry_count.value_or(0) ==
+                       lb.removal_retry_count.value_or(0);
         }
         return true;
     }
@@ -392,6 +414,10 @@ class MasterServiceSnapshotTestBase : public ::testing::Test {
     bool CompareLocalDiskSegmentState(const LocalDiskSegmentState& a,
                                       const LocalDiskSegmentState& b) const {
         if (a.enable_offloading != b.enable_offloading) {
+            return false;
+        }
+        if (a.ssd_total_capacity_bytes != b.ssd_total_capacity_bytes ||
+            a.ssd_used_bytes != b.ssd_used_bytes) {
             return false;
         }
         if (a.offloading_objects != b.offloading_objects) {
@@ -800,6 +826,8 @@ class MasterServiceSnapshotTestBase : public ::testing::Test {
 
         // ========== Phase 8: API-level validation ==========
         EXPECT_TRUE(CompareServiceState(state_before, state_after));
+
+        ValidateRestoredService(*restored_service);
 
         // ========== Phase 9: PutStart consistency validation ==========
         std::string best_segment =

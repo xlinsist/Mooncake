@@ -3,6 +3,7 @@ add_subdirectory(cachelib_memory_allocator)
 
 set(MOONCAKE_STORE_SOURCES
     allocator.cpp
+    placement_policy.cpp
     master_service.cpp
     master_snapshot_manager.cpp
     master_snapshot_repository.cpp
@@ -445,8 +446,8 @@ endif()
 install(TARGETS mooncake_master mooncake_client DESTINATION bin)
 
 # ---------------------------------------------------------------------------
-# Optional: a self-contained libmooncake_store.so exporting only the store_c.h
-# C ABI, for consumers that dlopen the store (e.g. the Rust crate's `dlopen`
+# Optional: a self-contained libmooncake_store.so exporting only the store_c.h C
+# ABI, for consumers that dlopen the store (e.g. the Rust crate's `dlopen`
 # feature). Whole-archives the static mooncake_store + asio_static (objects are
 # -fPIC, see mooncake-common/common.cmake) and localizes everything else via the
 # version script; only system/toolkit libs (and the Go etcd/k8s backends when
@@ -456,15 +457,13 @@ if(WITH_STORE_C_SHARED)
   # ELF/GNU-ld features (--whole-archive, --as-needed, version script, $ORIGIN);
   # supported by GNU ld, gold, and lld. Linux only.
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    message(
-      FATAL_ERROR
-        "WITH_STORE_C_SHARED currently supports Linux/ELF only "
-        "(got CMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}).")
+    message(FATAL_ERROR "WITH_STORE_C_SHARED currently supports Linux/ELF only "
+                        "(got CMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}).")
   endif()
 
-  # We whole-archive mooncake_store and reuse its name, so require it to be static
-  # (add_library(mooncake_store) follows BUILD_SHARED_LIBS, which some backends
-  # force ON).
+  # We whole-archive mooncake_store and reuse its name, so require it to be
+  # static (add_library(mooncake_store) follows BUILD_SHARED_LIBS, which some
+  # backends force ON).
   get_target_property(_mooncake_store_type mooncake_store TYPE)
   if(NOT _mooncake_store_type STREQUAL "STATIC_LIBRARY")
     message(

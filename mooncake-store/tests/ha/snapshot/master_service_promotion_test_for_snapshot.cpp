@@ -84,6 +84,34 @@ class MasterServicePromotionSnapshotTest
         return service_->NotifyOffloadSuccess(client_id, tasks, metas)
             .has_value();
     }
+
+    void ValidateRestoredService(MasterService& restored) override {
+        if (!validate_removal_tombstone_) {
+            return;
+        }
+        auto removals = restored.PollLocalDiskRemovals(removal_owner_);
+        ASSERT_TRUE(removals);
+        ASSERT_EQ(removals->size(), 1);
+        const auto& removal = removals->front();
+        EXPECT_EQ(removal.tenant_id, TenantId::Default().value());
+        EXPECT_EQ(removal.key, removal_key_);
+        EXPECT_EQ(removal.descriptor.client_id, removal_owner_);
+        EXPECT_EQ(removal.descriptor.object_size, 4096);
+        EXPECT_EQ(removal.descriptor.transport_endpoint, "127.0.0.1:19001");
+        EXPECT_EQ(removal.descriptor.backend_id.value_or(""), "stable-backend");
+        EXPECT_EQ(removal.descriptor.locator.value_or(""), "objects/version-3");
+        EXPECT_EQ(removal.descriptor.generation.value_or(0), 3);
+        ASSERT_TRUE(restored.AckLocalDiskRemoval(removal_owner_, removal_key_,
+                                                 TenantId::Default(), true));
+        auto after_ack = restored.PollLocalDiskRemovals(removal_owner_);
+        ASSERT_TRUE(after_ack);
+        EXPECT_TRUE(after_ack->empty());
+        EXPECT_EQ(restored.GetKeyCount(), 0);
+    }
+
+    bool validate_removal_tombstone_{false};
+    UUID removal_owner_{};
+    std::string removal_key_;
 };
 
 bool MasterServicePromotionSnapshotTest::glog_initialized_ = false;
@@ -102,6 +130,41 @@ TEST_F(MasterServicePromotionSnapshotTest, LocalDiskReplicaRoundTrip) {
     ASSERT_TRUE(before.has_value());
     ASSERT_EQ(before->replicas.size(), 1u);
     EXPECT_TRUE(before->replicas[0].is_local_disk_replica());
+}
+
+TEST_F(MasterServicePromotionSnapshotTest,
+       DirectLocalRemovalTombstoneRoundTrip) {
+    setenv("MC_HETERO_STORAGE_POLICY", "local_only", 1);
+    CreateMasterServiceWithPromotion();
+    const UUID owner = generate_uuid();
+    ASSERT_TRUE(service_->MountLocalDiskSegment(owner, true));
+
+    auto start =
+        service_->PutStart(owner, "direct-removed", TenantId::Default(), 4096,
+                           ManagedReplicateConfig());
+    ASSERT_TRUE(start);
+    ObjectMeta metadata;
+    metadata.key = "direct-removed";
+    metadata.local_disk_transport_endpoint = "127.0.0.1:19001";
+    metadata.local_disk_backend_id = "stable-backend";
+    metadata.local_disk_locator = "objects/version-3";
+    metadata.local_disk_generation = 3;
+    ASSERT_TRUE(service_->PutEnd(owner, metadata, TenantId::Default(),
+                                 ReplicaType::LOCAL_DISK));
+    ASSERT_TRUE(service_->Remove("direct-removed", TenantId::Default(), true));
+
+    auto removals = service_->PollLocalDiskRemovals(owner);
+    ASSERT_TRUE(removals);
+    ASSERT_EQ(removals->size(), 1);
+    EXPECT_EQ(removals->front().descriptor.backend_id.value_or(""),
+              "stable-backend");
+    EXPECT_EQ(removals->front().descriptor.locator.value_or(""),
+              "objects/version-3");
+    EXPECT_EQ(removals->front().descriptor.generation.value_or(0), 3);
+    validate_removal_tombstone_ = true;
+    removal_owner_ = owner;
+    removal_key_ = "direct-removed";
+    unsetenv("MC_HETERO_STORAGE_POLICY");
 }
 
 // A key with both LOCAL_DISK and a separate MEMORY replica round-trips.

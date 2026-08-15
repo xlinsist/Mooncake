@@ -175,6 +175,12 @@ class MasterMetricManager {
     void inc_nof_heartbeat_timeout_total(int64_t val = 1);
     void inc_nof_segments_unmounted_by_heartbeat_total(int64_t val = 1);
     void observe_nof_heartbeat_probe_latency_ms(int64_t latency_ms);
+    void inc_placement_decision(const std::string& policy,
+                                const std::string& target,
+                                const std::string& result, int64_t val = 1);
+    void observe_placement_decision_latency_us(int64_t latency_us);
+    void inc_storage_remove(const std::string& target,
+                            const std::string& result, int64_t val = 1);
 
     // Batch Operation Statistics (Counters)
     void inc_batch_exist_key_requests(int64_t items);
@@ -606,6 +612,9 @@ class MasterMetricManager {
     ylt::metric::counter_t nof_heartbeat_timeout_total_;
     ylt::metric::counter_t nof_segments_unmounted_by_heartbeat_total_;
     ylt::metric::histogram_t nof_heartbeat_probe_latency_ms_;
+    ylt::metric::dynamic_counter_3t placement_decision_total_;
+    ylt::metric::histogram_t placement_decision_latency_us_;
+    ylt::metric::dynamic_counter_2t storage_remove_total_;
 
     // Batch Operation Statistics
     ylt::metric::counter_t batch_exist_key_requests_;

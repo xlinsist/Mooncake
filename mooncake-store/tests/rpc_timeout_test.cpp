@@ -82,6 +82,13 @@ TEST(RpcTimeoutTest, ErrorCodeValueAndString) {
     EXPECT_NE(ErrorCode::RPC_TIMEOUT, ErrorCode::RPC_FAIL);
 }
 
+TEST(RpcTimeoutTest, FinalizeAmbiguityIncludesFailureAndTimeout) {
+    EXPECT_TRUE(IsAmbiguousRpcError(ErrorCode::RPC_FAIL));
+    EXPECT_TRUE(IsAmbiguousRpcError(ErrorCode::RPC_TIMEOUT));
+    EXPECT_FALSE(IsAmbiguousRpcError(ErrorCode::OBJECT_NOT_FOUND));
+    EXPECT_FALSE(IsAmbiguousRpcError(ErrorCode::FILE_WRITE_FAIL));
+}
+
 // End-to-end: a small MC_RPC_TIMEOUT_MS must be honored by every RPC and turn
 // an unanswered call into ErrorCode::RPC_TIMEOUT well before the 30s default.
 TEST(RpcTimeoutTest, RpcTimesOutAgainstUnresponsiveMaster) {
