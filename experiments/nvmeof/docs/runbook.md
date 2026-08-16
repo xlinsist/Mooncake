@@ -135,6 +135,36 @@ The NoF benchmark uses the same workload matrix as fio and repeats every case
 three times. It additionally sweeps workers 1/2/4 and inflight limits
 8/32/128 MiB at the configured best queue depth.
 
+### Transparent-layer paired overhead
+
+To measure the transparent layer rather than compare unrelated storage paths,
+run the paired Store API benchmark once for each selected target. Each command
+first writes through an explicit `ReplicateConfig` control and then repeats the
+same workload through ordinary `store.put(key, value)` with the matching Master
+policy. It records `put`, `get`, and `remove` samples, latency percentiles,
+operation rate, payload bandwidth where applicable, and process CPU use.
+
+```bash
+export TRANSPARENT_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-transparent"
+# Set local_only in the Master service environment before this command.
+TRANSPARENT_BENCH_TARGET=local_nvme ./run.sh transparent-overhead
+# Set remote_only in the Master service environment before this command.
+TRANSPARENT_BENCH_TARGET=remote_nof ./run.sh transparent-overhead
+```
+
+Do not combine the local and remote deltas: they characterize different
+backends. A failed descriptor check, failed deletion, absent metric, or mixed
+run ID invalidates that result instead of indicating a performance regression.
+
+The verified Python 3.12 run is recorded under
+`/sharenvme/userhome/zhouxulin/mooncake-transparent-layer-py312-20260816T000000Z`.
+Its `put` p50 transparent-minus-direct overhead was `+4.0716%` for local NVMe
+and `+14.0316%` for remote NoF. A separate lifecycle batch passed local-only,
+remote-only, unavailable-target, client-restart, and round-robin checks. See
+[`transparent-layer-deployment.md`](transparent-layer-deployment.md) for the
+deployment and rollback procedure. The Master was restored to
+`MC_HETERO_STORAGE_POLICY=local_only` after the run.
+
 ## 6. Failure injection
 
 Keep a correctness or mixed-I/O workload running, and use a management shell:

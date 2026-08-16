@@ -12,6 +12,11 @@ Start here. This directory is organized into three parts:
 To run or maintain the experiment, read
 [`docs/runbook.md`](docs/runbook.md). For the current result, read
 [`docs/local-remote-decision-boundary.md`](docs/local-remote-decision-boundary.md).
+For the completed transparent-layer testbed recovery and paired-performance
+execution record, read
+[`docs/transparent-layer-testbed-unblock-plan.md`](docs/transparent-layer-testbed-unblock-plan.md).
+For the staged Python 3.12 binding deployment and policy operations, read
+[`docs/transparent-layer-deployment.md`](docs/transparent-layer-deployment.md).
 
 Create the machine-local configuration with:
 
@@ -170,10 +175,11 @@ For unprivileged TCP loopback validation where the hugetlbfs mount is not
 writable, set `MC_SPDK_ENV_CONTEXT="--no-huge --legacy-mem -m 1024"` for the
 Store client. The default remains the production hugepage-backed SPDK setup.
 
-Each JSON result contains the direct and transparent put/get p50, p95, p99,
-bandwidth, process CPU utilization, and an `overhead` section with absolute and
-percentage deltas. The `direct` local run still uses the Store lifecycle and
-explicit `ReplicateConfig`; it is not a fio/POSIX baseline. Existing
+Each JSON result contains direct and transparent `put`, `get`, and `remove`
+samples plus p50, p95, p99, operation rate, and (for `put`/`get`) bandwidth.
+Its `overhead` section reports absolute and percentage deltas, together with
+process CPU utilization. The `direct` local run still uses the Store lifecycle
+and explicit `ReplicateConfig`; it is not a fio/POSIX baseline. Existing
 `nof-benchmark` and same-SSD commands remain the device/path characterization
 controls. The Master's `placement_decision_latency_us` metric separately
 isolates policy-decision software time.

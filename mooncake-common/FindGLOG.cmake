@@ -1,6 +1,7 @@
 find_package(glog QUIET CONFIG)
 
 if(TARGET glog::glog)
+    set_property(TARGET glog::glog PROPERTY IMPORTED_GLOBAL TRUE)
     set(GLOG_FOUND TRUE)
     set(GLOG_TARGET glog::glog)
 else()
@@ -19,7 +20,7 @@ else()
 
     if(GLOG_INCLUDE_DIR AND GLOG_LIBRARY)
         set(GLOG_FOUND TRUE)
-        add_library(glog::glog INTERFACE IMPORTED)
+        add_library(glog::glog INTERFACE IMPORTED GLOBAL)
         target_include_directories(glog::glog INTERFACE ${GLOG_INCLUDE_DIR})
         target_link_libraries(glog::glog INTERFACE ${GLOG_LIBRARY})
         set(GLOG_TARGET glog::glog)

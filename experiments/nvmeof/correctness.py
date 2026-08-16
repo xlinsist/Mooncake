@@ -401,12 +401,22 @@ def transparent_benchmark(count: int, size: int, target: str, mode: str, prefix:
 
         config = ReplicateConfig()
         config.replica_num = 0
-        config.nof_replica_num = int(target == "remote_nof")
-        config.local_replica_num = int(target == "local_nvme")
+        if target == "remote_nof":
+            config.nof_replica_num = 1
+        elif target == "local_nvme":
+            if not hasattr(config, "local_replica_num"):
+                raise RuntimeError(
+                    "installed Mooncake Python binding does not support "
+                    "local_replica_num"
+                )
+            config.local_replica_num = 1
+        else:
+            raise ValueError(f"unsupported benchmark target: {target}")
 
     keys = []
     put_samples = []
     get_samples = []
+    remove_samples = []
     started_cpu = time.process_time_ns()
     started_wall = time.perf_counter_ns()
     try:
@@ -422,11 +432,18 @@ def transparent_benchmark(count: int, size: int, target: str, mode: str, prefix:
             put_samples.append(time.perf_counter_ns() - started)
             if rc != 0:
                 raise AssertionError(f"benchmark put failed for {key}: {rc}")
+            keys.append(key)
             assert_target(store, key, target)
             started = time.perf_counter_ns()
             verify(store, key, value)
             get_samples.append(time.perf_counter_ns() - started)
-            keys.append(key)
+        for key in keys:
+            started = time.perf_counter_ns()
+            rc = store.remove(key, True)
+            remove_samples.append(time.perf_counter_ns() - started)
+            if rc != 0:
+                raise AssertionError(f"benchmark remove failed for {key}: {rc}")
+        keys.clear()
     finally:
         for key in keys:
             store.remove(key, True)
@@ -436,21 +453,31 @@ def transparent_benchmark(count: int, size: int, target: str, mode: str, prefix:
     cpu_ns = time.process_time_ns() - started_cpu
     total_bytes = count * size
 
-    def operation(samples):
-        return {
+    def operation(samples, payload_bytes: int | None):
+        total_seconds = sum(samples) / 1e9
+        result = {
+            "samples_ms": [sample / 1_000_000 for sample in samples],
             "p50_ms": percentile_ms(samples, 50),
             "p95_ms": percentile_ms(samples, 95),
             "p99_ms": percentile_ms(samples, 99),
-            "bandwidth_mib_s": total_bytes / (sum(samples) / 1e9) / (1 << 20),
+            "operations_per_second": len(samples) / total_seconds
+            if total_seconds
+            else 0.0,
         }
+        if payload_bytes is not None:
+            result["bandwidth_mib_s"] = (
+                payload_bytes / total_seconds / (1 << 20) if total_seconds else 0.0
+            )
+        return result
 
     return {
         "mode": mode,
         "target": target,
         "objects": count,
         "object_size": size,
-        "put": operation(put_samples),
-        "get": operation(get_samples),
+        "put": operation(put_samples, total_bytes),
+        "get": operation(get_samples, total_bytes),
+        "remove": operation(remove_samples, None),
         "cpu_utilization": cpu_ns / elapsed_ns if elapsed_ns else 0.0,
     }
 
@@ -474,9 +501,15 @@ def transparent_overhead(count: int, size: int, target: str, prefix: str):
     overhead = {
         operation: {
             metric: delta(transparent[operation][metric], direct[operation][metric])
-            for metric in ("p50_ms", "p95_ms", "p99_ms", "bandwidth_mib_s")
+            for metric in (
+                "p50_ms",
+                "p95_ms",
+                "p99_ms",
+                "operations_per_second",
+                *(() if operation == "remove" else ("bandwidth_mib_s",)),
+            )
         }
-        for operation in ("put", "get")
+        for operation in ("put", "get", "remove")
     }
     overhead["cpu_utilization"] = delta(
         transparent["cpu_utilization"], direct["cpu_utilization"]
@@ -738,7 +771,16 @@ def transparent_acceptance(result_dir: str, run_id: str):
                     failures.append(f"{filename}: {mode} objects do not match")
                 if mode_report.get("object_size") != report.get("object_size"):
                     failures.append(f"{filename}: {mode} object_size does not match")
-                for operation in ("put", "get"):
+                for operation in ("put", "get", "remove"):
+                    samples = mode_report.get(operation, {}).get("samples_ms")
+                    if (
+                        not isinstance(samples, list)
+                        or len(samples) != report.get("objects")
+                        or not all(finite_nonnegative(sample) for sample in samples)
+                    ):
+                        failures.append(
+                            f"{filename}: invalid {mode} {operation}.samples_ms"
+                        )
                     for metric in ("p50_ms", "p95_ms", "p99_ms"):
                         if not finite_nonnegative(
                             mode_report.get(operation, {}).get(metric)
@@ -747,6 +789,12 @@ def transparent_acceptance(result_dir: str, run_id: str):
                                 f"{filename}: invalid {mode} {operation}.{metric}"
                             )
                     if not finite_positive(
+                        mode_report.get(operation, {}).get("operations_per_second")
+                    ):
+                        failures.append(
+                            f"{filename}: invalid {mode} {operation}.operations_per_second"
+                        )
+                    if operation != "remove" and not finite_positive(
                         mode_report.get(operation, {}).get("bandwidth_mib_s")
                     ):
                         failures.append(
@@ -754,8 +802,11 @@ def transparent_acceptance(result_dir: str, run_id: str):
                         )
                 if not finite_nonnegative(mode_report.get("cpu_utilization")):
                     failures.append(f"{filename}: invalid {mode} cpu_utilization")
-            for operation in ("put", "get"):
-                for metric in ("p50_ms", "p95_ms", "p99_ms", "bandwidth_mib_s"):
+            for operation in ("put", "get", "remove"):
+                metrics = ["p50_ms", "p95_ms", "p99_ms", "operations_per_second"]
+                if operation != "remove":
+                    metrics.append("bandwidth_mib_s")
+                for metric in metrics:
                     delta = report.get("overhead", {}).get(operation, {}).get(metric)
                     if not valid_delta(delta):
                         failures.append(

@@ -1,6 +1,13 @@
 find_package(JsonCpp QUIET CONFIG)
 
+# Debian and Ubuntu ship a lowercase jsoncppConfig.cmake.  Try that package
+# name as well so its JsonCpp::JsonCpp compatibility target is imported.
+if(NOT TARGET JsonCpp::JsonCpp)
+    find_package(jsoncpp QUIET CONFIG)
+endif()
+
 if(TARGET JsonCpp::JsonCpp)
+    set_property(TARGET JsonCpp::JsonCpp PROPERTY IMPORTED_GLOBAL TRUE)
     set(JSONCPP_FOUND TRUE)
     set(JSONCPP_TARGET JsonCpp::JsonCpp)
 else()
@@ -19,7 +26,7 @@ else()
 
     if(JSONCPP_INCLUDE_DIR AND JSONCPP_LIBRARY)
         set(JSONCPP_FOUND TRUE)
-        add_library(JsonCpp::JsonCpp INTERFACE IMPORTED)
+        add_library(JsonCpp::JsonCpp INTERFACE IMPORTED GLOBAL)
         target_include_directories(JsonCpp::JsonCpp INTERFACE ${JSONCPP_INCLUDE_DIR})
         target_link_libraries(JsonCpp::JsonCpp INTERFACE ${JSONCPP_LIBRARY})
         set(JSONCPP_TARGET JsonCpp::JsonCpp)

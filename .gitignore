@@ -212,3 +212,5 @@ core_*
 
 build-nof
 .omx
+build-local/
+build-py312*/
