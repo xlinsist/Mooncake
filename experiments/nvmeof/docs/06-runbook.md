@@ -161,7 +161,7 @@ The verified Python 3.12 run is recorded under
 Its `put` p50 transparent-minus-direct overhead was `+4.0716%` for local NVMe
 and `+14.0316%` for remote NoF. A separate lifecycle batch passed local-only,
 remote-only, unavailable-target, client-restart, and round-robin checks. See
-[`transparent-layer-deployment.md`](transparent-layer-deployment.md) for the
+[`05-transparent-layer-deployment.md`](05-transparent-layer-deployment.md) for the
 deployment and rollback procedure. The Master was restored to
 `MC_HETERO_STORAGE_POLICY=local_only` after the run.
 
@@ -225,7 +225,7 @@ Results are written under `results/<timestamp>/characterization/`:
 `results/` is intentionally ignored because it contains machine-specific raw
 outputs and telemetry. Promote only reviewed, reproducible findings to this
 `docs/` directory. The current characterization summary is documented in
-[`local-remote-decision-boundary.md`](local-remote-decision-boundary.md).
+[`01-local-remote-decision-boundary.md`](01-local-remote-decision-boundary.md).
 
 The automated Go criterion is deliberately narrow: at least one nonzero local
 load and object-size combination must have lower remote p95 latency with no

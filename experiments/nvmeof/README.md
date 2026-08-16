@@ -9,14 +9,17 @@ Start here. This directory is organized into three parts:
 - the remaining files: experiment scripts and configuration templates. Normal
   users do not need to inspect them directly.
 
+For the numbered development trajectory, start with
+[`docs/README.md`](docs/README.md).
+
 To run or maintain the experiment, read
-[`docs/runbook.md`](docs/runbook.md). For the current result, read
-[`docs/local-remote-decision-boundary.md`](docs/local-remote-decision-boundary.md).
+[`docs/06-runbook.md`](docs/06-runbook.md). For the current result, read
+[`docs/01-local-remote-decision-boundary.md`](docs/01-local-remote-decision-boundary.md).
 For the completed transparent-layer testbed recovery and paired-performance
 execution record, read
-[`docs/transparent-layer-testbed-unblock-plan.md`](docs/transparent-layer-testbed-unblock-plan.md).
+[`docs/03-transparent-layer-testbed-unblock-plan.md`](docs/03-transparent-layer-testbed-unblock-plan.md).
 For the staged Python 3.12 binding deployment and policy operations, read
-[`docs/transparent-layer-deployment.md`](docs/transparent-layer-deployment.md).
+[`docs/05-transparent-layer-deployment.md`](docs/05-transparent-layer-deployment.md).
 
 Create the machine-local configuration with:
 

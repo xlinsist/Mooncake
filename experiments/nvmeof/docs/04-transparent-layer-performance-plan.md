@@ -3,7 +3,7 @@
 ## Status
 
 Complete on `intel-bigmem-2` with the isolated Python 3.12 deployment described
-in [`transparent-layer-deployment.md`](transparent-layer-deployment.md).
+in [`05-transparent-layer-deployment.md`](05-transparent-layer-deployment.md).
 The paired Store API results are in the deployment result directory:
 
 ```text
