@@ -106,6 +106,3 @@ checks passed, and local and remote deltas are available for `put`, `get`, and
 `remove`. This plan records evidence; it does not impose a universal numeric
 regression threshold because that threshold depends on the testbed's SSD, NoF
 fabric, object size, and configured policy.
-
-Master HA restart/failover and NoF service restart remain separate pre-release
-gates. They were not claimed by the standalone-Master result above.

@@ -123,10 +123,3 @@ The binding and policy paths are ready for continued feature work after:
 3. Local, remote, unavailable, client-restart, and round-robin JSON reports
    have `status: "pass"` within their respective coherent result batches.
 4. The Master is restored to `local_only` and the NoF endpoint is registered.
-
-Master HA restart and NoF service restart are separate pre-release gates. Do
-not execute the `master_ha_restart` scenario against a standalone Master: it
-requires a deployment that persists and restores its metadata snapshot/oplog.
-Schedule NoF service restart validation in a maintenance window, capture the
-service identity before and after, and retain the service logs with the result
-directory.

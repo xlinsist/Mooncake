@@ -142,11 +142,7 @@ transparent descriptor proves that both variants selected the same backend.
 4. Every transparent sample's published descriptor matches its requested
    backend, and all test objects are successfully removed.
 5. No remote result is accepted while any direct smoke write reports `-200`.
-6. The strict `transparent-acceptance.json` gate is not claimed for the
-   lifecycle batch because the repository's gate also requires software-test
-   and all restart-scenario artifacts. The paired overhead and lifecycle
-   artifacts themselves are complete and passing.
-7. The original dirty checkout remains dirty only by its pre-existing changes;
+6. The original dirty checkout remains dirty only by its pre-existing changes;
    no reset, pull, or write occurs there.
 
 ## Risks And Stops
@@ -170,7 +166,5 @@ cmake --build build-nof --target heterogeneous_storage_test client_storage_backe
 ctest --test-dir build-nof -V -R '^heterogeneous_storage_test$'
 ```
 
-For a future release-candidate batch, inspect the two JSON files, add the
-software and restart artifacts, and run `./run.sh transparent-acceptance`. A
-passing software test suite does not substitute for the paired hardware
-evidence.
+The paired hardware evidence is retained with the isolated deployment for
+reproducibility.

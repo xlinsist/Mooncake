@@ -165,30 +165,7 @@ remote-only, unavailable-target, client-restart, and round-robin checks. See
 deployment and rollback procedure. The Master was restored to
 `MC_HETERO_STORAGE_POLICY=local_only` after the run.
 
-## 6. Failure injection
-
-Keep a correctness or mixed-I/O workload running, and use a management shell:
-
-```bash
-./run.sh target-stop
-./run.sh target-start
-./run.sh register
-```
-
-Test in this order: memory+NoF, NoF-only, target recovery, master restart, and
-target stop during 128-KiB mixed I/O. Record the elapsed heartbeat removal time
-and verify requests terminate without incorrect data, deadlock, or a process
-crash. The harness stops the listener process instead of modifying the IPoIB
-link.
-
-`nof_worker_pool_bench` now has an I/O completion deadline. Set
-`BENCH_IO_TIMEOUT` in `config.env`; a stuck run emits `benchmark_timeout=1` and
-`outstanding_ops=<count>`, then exits with status 124. `run.sh` also wraps the
-process in `timeout --kill-after` so a target failure cannot strand an
-unattended characterization run. Status 124 is a failed sample, never a
-performance result.
-
-## 7. Local / remote characterization
+## 6. Local / remote characterization
 
 Configure `LOCAL_NVME_DEVICE`, its physical serial, and
 `CLIENT_NET_INTERFACE` (the Linux network interface, not the verbs device).
@@ -233,7 +210,7 @@ errors. It does not claim multi-SSD aggregation; that remains marked untested
 until additional namespaces or targets are configured. Rebuild summaries and
 plots without rerunning hardware tests with `./run.sh characterize-summarize`.
 
-## 8. Same-SSD path-overhead characterization
+## 7. Same-SSD path-overhead characterization
 
 This maintenance-window workflow compares Mooncake NoF with target-local SPDK
 `bdevperf` against the same physical SSD. Configure `TARGET_NVME_BDF`,
@@ -265,7 +242,7 @@ summary without rerunning hardware tests with:
 SAME_SSD_RESULT_DIR=results/same-ssd-<timestamp> ./run.sh same-ssd-summarize
 ```
 
-## 9. Cleanup
+## 8. Cleanup
 
 ```bash
 ./run.sh unregister

@@ -20,5 +20,4 @@ verified transparent heterogeneous-storage deployment.
    policy verification, verified results, and rollback procedure.
 6. [`06-runbook.md`](06-runbook.md)
    is the current maintenance and experiment execution manual, including
-   baselines, registration, characterization, failure injection, cleanup, and
-   acceptance checks.
+   baselines, registration, characterization, cleanup, and acceptance checks.
