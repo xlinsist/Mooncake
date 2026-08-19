@@ -25,3 +25,9 @@
   files, leave those edits out of the PR.
 - Keep PRs lean: review `git diff` before staging, and include only changes
   required for the requested task.
+
+## Milestone Commits
+
+- After completing and validating a meaningful milestone, stage only its
+  related files with `git add` and create a focused `git commit` before moving
+  on to unrelated work.
