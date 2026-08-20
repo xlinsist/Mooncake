@@ -6,14 +6,17 @@ import argparse
 import hashlib
 import json
 import random
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 
 SCHEMA_VERSION = 1
+REPLAY_SCHEMA_VERSION = 1
 OPERATIONS = frozenset(("produce", "reuse", "evict", "miss"))
 POLICIES = frozenset(("local_only", "remote_only", "round_robin"))
+REPLAY_MODES = frozenset(("no_store", "direct", "transparent"))
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,220 @@ def manifest_for(
         "event_count": len(materialized),
         "trace_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
     }
+
+
+def _connect_store() -> Any:
+    from correctness import connect
+
+    return connect()
+
+
+def _direct_config(target: str) -> Any:
+    from mooncake.store import ReplicateConfig
+
+    config = ReplicateConfig()
+    config.replica_num = 0
+    if target == "remote_nof":
+        config.nof_replica_num = 1
+    elif target == "local_nvme":
+        if not hasattr(config, "local_replica_num"):
+            raise RuntimeError(
+                "installed Mooncake Python binding does not support local_replica_num"
+            )
+        config.local_replica_num = 1
+    else:
+        raise ValueError(f"unsupported replay target: {target}")
+    return config
+
+
+def _descriptor_for(store: Any, key: str, expected_target: str | None) -> dict[str, Any]:
+    from correctness import descriptor_fingerprint
+
+    if expected_target is not None:
+        return descriptor_fingerprint(store, key, expected_target)
+
+    failures = []
+    for candidate in ("local_nvme", "remote_nof"):
+        try:
+            return descriptor_fingerprint(store, key, candidate)
+        except AssertionError as error:
+            failures.append(str(error))
+    raise AssertionError(f"unsupported or incomplete descriptor for {key}: {failures}")
+
+
+def _block_payload(block_id: str, block_size: int) -> bytes:
+    seed = hashlib.sha256(block_id.encode()).digest()
+    repeats = (block_size + len(seed) - 1) // len(seed)
+    return (seed * repeats)[:block_size]
+
+
+def replay_trace(
+    events: Iterable[TraceEvent],
+    *,
+    mode: str,
+    target: str | None = None,
+    key_prefix: str = "kv-workload",
+    recompute_us: int = 1_000,
+    store_factory: Callable[[], Any] = _connect_store,
+    config_factory: Callable[[str], Any] = _direct_config,
+    descriptor_reader: Callable[[Any, str, str | None], dict[str, Any]] = (
+        _descriptor_for
+    ),
+    clock_ns: Callable[[], int] = time.perf_counter_ns,
+) -> dict[str, Any]:
+    """Replay a validated trace in timestamp order and return raw case results.
+
+    Store failures are captured in the returned result and stop the case.  The
+    injectable helpers keep the Store contract testable without Mooncake hardware.
+    """
+
+    materialized = validate_trace(events)
+    if mode not in REPLAY_MODES:
+        raise ValueError(f"unsupported replay mode: {mode}")
+    if recompute_us < 0:
+        raise ValueError("recompute_us must be non-negative")
+    if mode == "direct" and target not in ("local_nvme", "remote_nof"):
+        raise ValueError("direct replay requires local_nvme or remote_nof target")
+    if not key_prefix:
+        raise ValueError("key_prefix is required")
+
+    result: dict[str, Any] = {
+        "schema_version": REPLAY_SCHEMA_VERSION,
+        "status": "pass",
+        "mode": mode,
+        "target": target,
+        "event_count": len(materialized),
+        "operations": [],
+        "errors": [],
+        "recompute_model": (
+            {"kind": "fixed_proxy", "latency_us": recompute_us}
+            if mode == "no_store"
+            else None
+        ),
+    }
+    if not materialized:
+        return result
+
+    store = None
+    config = None
+    live_keys: set[str] = set()
+    descriptors: dict[str, dict[str, Any]] = {}
+    try:
+        if mode != "no_store":
+            store = store_factory()
+            if mode == "direct":
+                config = config_factory(target)
+
+        for event_index, event in enumerate(materialized):
+            key = f"{key_prefix}-{event.block_id}"
+            record: dict[str, Any] = {
+                "event_index": event_index,
+                "timestamp_us": event.timestamp_us,
+                "request_id": event.request_id,
+                "prefix_id": event.prefix_id,
+                "key": key,
+                "block_id": event.block_id,
+                "block_size": event.block_size,
+                "operation": event.operation,
+                "policy": event.policy,
+                "target_policy": event.policy,
+                "store_operation": None,
+                "descriptor": None,
+                "return_code": 0,
+                "latency_us": 0.0,
+                "error": None,
+            }
+            result["operations"].append(record)
+            try:
+                if event.operation == "miss" or mode == "no_store":
+                    record["store_operation"] = (
+                        "noop" if event.operation == "evict" else "recompute"
+                    )
+                    record["latency_us"] = (
+                        0.0 if event.operation == "evict" else float(recompute_us)
+                    )
+                    continue
+
+                payload = _block_payload(event.block_id, event.block_size)
+                started_ns = clock_ns()
+                if event.operation == "produce":
+                    record["store_operation"] = "put"
+                    rc = (
+                        store.put(key, payload)
+                        if config is None
+                        else store.put(key, payload, config)
+                    )
+                    record["latency_us"] = (clock_ns() - started_ns) / 1_000
+                    record["return_code"] = rc
+                    if rc != 0:
+                        raise RuntimeError(f"put returned {rc}")
+                    live_keys.add(key)
+                    expected_target = target
+                    if mode == "transparent":
+                        expected_target = {
+                            "local_only": "local_nvme",
+                            "remote_only": "remote_nof",
+                            "round_robin": None,
+                        }[event.policy]
+                    descriptor = descriptor_reader(store, key, expected_target)
+                    if descriptor.get("object_size") != event.block_size:
+                        raise AssertionError(
+                            f"descriptor size mismatch for {key}: "
+                            f"{descriptor.get('object_size')} != {event.block_size}"
+                        )
+                    descriptors[event.block_id] = descriptor
+                    record["descriptor"] = descriptor
+                elif event.operation == "reuse":
+                    record["store_operation"] = "get"
+                    actual = store.get(key)
+                    record["latency_us"] = (clock_ns() - started_ns) / 1_000
+                    if actual != payload:
+                        raise AssertionError(f"content mismatch for {key}")
+                    expected = descriptors[event.block_id]
+                    descriptor = descriptor_reader(store, key, expected["target"])
+                    if descriptor != expected:
+                        raise AssertionError(f"descriptor changed for {key}")
+                    record["descriptor"] = descriptor
+                elif event.operation == "evict":
+                    record["store_operation"] = "remove"
+                    record["descriptor"] = descriptors[event.block_id]
+                    rc = store.remove(key, True)
+                    record["latency_us"] = (clock_ns() - started_ns) / 1_000
+                    record["return_code"] = rc
+                    if rc != 0:
+                        raise RuntimeError(f"remove returned {rc}")
+                    live_keys.discard(key)
+                    descriptors.pop(event.block_id, None)
+            except Exception as error:
+                record["error"] = str(error)
+                result["errors"].append(
+                    {"event_index": event_index, "key": key, "error": str(error)}
+                )
+                result["status"] = "fail"
+                break
+    except Exception as error:
+        result["errors"].append({"event_index": None, "key": None, "error": str(error)})
+        result["status"] = "fail"
+    finally:
+        if store is not None:
+            for key in sorted(live_keys):
+                try:
+                    rc = store.remove(key, True)
+                    if rc != 0:
+                        raise RuntimeError(f"cleanup remove returned {rc}")
+                except Exception as error:
+                    result["errors"].append(
+                        {"event_index": None, "key": key, "error": str(error)}
+                    )
+                    result["status"] = "fail"
+            try:
+                store.close()
+            except Exception as error:
+                result["errors"].append(
+                    {"event_index": None, "key": None, "error": str(error)}
+                )
+                result["status"] = "fail"
+    return result
 
 
 def _main() -> int:
