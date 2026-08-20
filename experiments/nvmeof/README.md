@@ -131,3 +131,33 @@ and explicit `ReplicateConfig`; it is not a fio/POSIX baseline. Existing
 `nof-benchmark` and same-SSD commands remain the device/path characterization
 controls. The Master's `placement_decision_latency_us` metric separately
 isolates policy-decision software time.
+
+## KV-cache workload trace replay
+
+The independent workload path models `produce`, `reuse`, `evict`, and `miss`
+events without changing the transparent overhead baseline. Generation is fully
+deterministic for a fixed seed and writes the trace manifest alongside the
+trace. A run directory contains `trace.jsonl`, `manifest.json`, one
+`raw-<case>.json` per replay, and offline `operations.csv`, `summary.csv`, and
+`conclusion.json` artifacts:
+
+```bash
+KV_WORKLOAD_RUN_ID=smoke KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  ./run.sh kv-workload-generate
+KV_WORKLOAD_MODE=no_store KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  ./run.sh kv-workload-replay
+KV_WORKLOAD_MODE=direct KV_WORKLOAD_TARGET=remote_nof \
+KV_WORKLOAD_CASE_ID=direct-remote KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  ./run.sh kv-workload-replay
+KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  KV_WORKLOAD_REQUIRED_CASES=no_store,direct-remote ./run.sh kv-workload-summarize
+```
+
+`direct` and `transparent` invoke the configured Store environment; `no_store`
+uses only the fixed recomputation proxy recorded in the raw result. The
+summarizer is offline and returns `status=inconclusive` for failed or missing
+cases, duplicate case IDs, mixed run IDs, or mixed trace digests. Descriptor
+source counts are kept separate for `local_nvme` and `remote_nof`; they are not
+inferred from policy. This workflow reports synthetic/request-level proxy
+metrics only and does not claim model execution, HA behavior, or cluster-scale
+results.

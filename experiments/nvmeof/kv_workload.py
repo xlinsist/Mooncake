@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import random
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ REPLAY_SCHEMA_VERSION = 1
 OPERATIONS = frozenset(("produce", "reuse", "evict", "miss"))
 POLICIES = frozenset(("local_only", "remote_only", "round_robin"))
 REPLAY_MODES = frozenset(("no_store", "direct", "transparent"))
+DESCRIPTOR_TARGETS = frozenset(("local_nvme", "remote_nof"))
 
 
 @dataclass(frozen=True)
@@ -415,32 +418,264 @@ def replay_trace(
     return result
 
 
-def _main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output", type=Path)
-    parser.add_argument("--requests", type=int, default=12)
-    parser.add_argument("--blocks-per-request", type=int, default=4)
-    parser.add_argument("--block-size", type=int, default=131072)
-    parser.add_argument("--reuse-ratio", type=float, default=0.5)
-    parser.add_argument("--concurrency", type=int, default=1)
-    parser.add_argument("--policy", choices=sorted(POLICIES), default="round_robin")
-    parser.add_argument("--seed", type=int, default=0)
-    args = parser.parse_args()
+def _percentile(values: list[float], percentile: int) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, (percentile * len(ordered) + 99) // 100 - 1)
+    return round(ordered[index], 6)
+
+
+def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    operations = result.get("operations")
+    if not isinstance(operations, list):
+        raise ValueError("raw result operations must be a list")
+    if result.get("status") != "pass" or result.get("errors"):
+        raise ValueError("raw result contains failed operations")
+    rows: list[dict[str, Any]] = []
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise ValueError("operation must be an object")
+        descriptor = operation.get("descriptor") or {}
+        target = descriptor.get("target")
+        if target is not None and target not in DESCRIPTOR_TARGETS:
+            raise ValueError(f"unsupported descriptor target: {target}")
+        mode = result.get("mode")
+        policy = operation.get("policy")
+        expected_target = result.get("target") if mode == "direct" else {
+            "local_only": "local_nvme", "remote_only": "remote_nof"
+        }.get(policy)
+        if target is not None and expected_target is not None and target != expected_target:
+            raise ValueError(
+                f"descriptor mismatch for {operation.get('block_id')}: "
+                f"{target} != {expected_target}"
+            )
+        latency = float(operation.get("latency_us", 0.0))
+        rows.append(
+            {
+                "mode": result.get("mode"),
+                "target": result.get("target") or "",
+                "request_id": operation.get("request_id", ""),
+                "block_id": operation.get("block_id", ""),
+                "operation": operation.get("operation", ""),
+                "store_operation": operation.get("store_operation") or "noop",
+                "descriptor_target": target or "",
+                "latency_us": latency,
+                "return_code": operation.get("return_code", 0),
+            }
+        )
+    return rows, result
+
+
+def summarize_results(
+    result_dir: str | Path,
+    *,
+    required_cases: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Aggregate raw replay JSON files into CSVs and a guarded conclusion.
+
+    The summary is deliberately offline: it never connects to Mooncake and marks
+    incomplete, mixed-run, or failed inputs as ``inconclusive``.
+    """
+
+    output = Path(result_dir)
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    raw_paths = sorted(output.glob("raw-*.json"))
+    required = set(required_cases or manifest.get("required_cases", []))
+    seen_cases: set[str] = set()
+    run_ids: set[str] = set()
+    trace_digests: set[str] = set()
+    all_rows: list[dict[str, Any]] = []
+    case_summaries: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for raw_path in raw_paths:
+        try:
+            result = json.loads(raw_path.read_text(encoding="utf-8"))
+            case_id = str(result.get("case_id") or raw_path.stem.removeprefix("raw-"))
+            if case_id in seen_cases:
+                errors.append(f"duplicate case: {case_id}")
+            seen_cases.add(case_id)
+            if result.get("run_id") is not None:
+                run_ids.add(str(result["run_id"]))
+            if result.get("trace_sha256") is not None:
+                trace_digests.add(str(result["trace_sha256"]))
+            rows, result = _case_rows(result)
+            all_rows.extend([{**row, "case_id": case_id} for row in rows])
+            latencies = [row["latency_us"] for row in rows]
+            request_rows: dict[str, list[dict[str, Any]]] = {}
+            for row in rows:
+                if row["request_id"] != "cleanup" and not row["request_id"].endswith("-cleanup"):
+                    request_rows.setdefault(row["request_id"], []).append(row)
+            request_latencies = [sum(row["latency_us"] for row in group) for group in request_rows.values()]
+            request_count = len(request_rows)
+            hit_requests = sum(any(row["operation"] == "reuse" for row in group) for group in request_rows.values())
+            blocks_seen = sum(row["operation"] in ("produce", "reuse") for row in rows)
+            block_hits = sum(row["operation"] == "reuse" for row in rows)
+            misses = sum(row["operation"] == "miss" for row in rows)
+            storage_rows = [row for row in rows if row["store_operation"] in ("put", "get", "remove")]
+            storage_wait = sum(row["latency_us"] for row in storage_rows)
+            case_summaries.append(
+                {
+                    "case_id": case_id,
+                    "mode": result.get("mode"),
+                    "target": result.get("target") or "",
+                    "operations": len(rows),
+                    "p50_latency_us": _percentile(latencies, 50),
+                    "p95_latency_us": _percentile(latencies, 95),
+                    "p99_latency_us": _percentile(latencies, 99),
+                    "operation_rate": round(len(rows) / (sum(latencies) / 1_000_000), 6)
+                    if sum(latencies) > 0
+                    else None,
+                    "request_count": request_count,
+                    "request_hit_rate": round(hit_requests / request_count, 6) if request_count else None,
+                    "block_hit_rate": round(block_hits / blocks_seen, 6) if blocks_seen else None,
+                    "miss_rate": round(misses / len(rows), 6) if rows else None,
+                    "request_p50_latency_us": _percentile(request_latencies, 50),
+                    "request_p95_latency_us": _percentile(request_latencies, 95),
+                    "storage_wait_us": round(storage_wait, 6),
+                    "cpu_utilization_pct": result.get("cpu_utilization_pct"),
+                    "produce": sum(row["operation"] == "produce" for row in rows),
+                    "reuse": sum(row["operation"] == "reuse" for row in rows),
+                    "evict": sum(row["operation"] == "evict" for row in rows),
+                    "miss": sum(row["operation"] == "miss" for row in rows),
+                    "local": sum(row["descriptor_target"] == "local_nvme" for row in rows),
+                    "remote": sum(row["descriptor_target"] == "remote_nof" for row in rows),
+                }
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            errors.append(f"{raw_path.name}: {error}")
+
+    missing = sorted(required - seen_cases)
+    if len(run_ids) > 1:
+        errors.append("mixed run IDs")
+    if len(trace_digests) > 1:
+        errors.append("mixed trace digests")
+    if missing:
+        errors.append(f"missing cases: {', '.join(missing)}")
+    status = "pass" if raw_paths and not errors else "inconclusive"
+
+    output.mkdir(parents=True, exist_ok=True)
+    operation_fields = [
+        "case_id", "mode", "target", "request_id", "block_id", "operation",
+        "store_operation", "descriptor_target", "latency_us", "return_code",
+    ]
+    with (output / "operations.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=operation_fields)
+        writer.writeheader()
+        writer.writerows(all_rows)
+    summary_fields = [
+        "case_id", "mode", "target", "operations", "p50_latency_us",
+        "p95_latency_us", "p99_latency_us", "operation_rate", "produce", "reuse",
+        "evict", "miss", "request_count", "request_hit_rate", "block_hit_rate",
+        "miss_rate", "request_p50_latency_us", "request_p95_latency_us",
+        "storage_wait_us", "cpu_utilization_pct", "local", "remote",
+    ]
+    with (output / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=summary_fields)
+        writer.writeheader()
+        writer.writerows(case_summaries)
+    conclusion = {
+        "schema_version": REPLAY_SCHEMA_VERSION,
+        "status": status,
+        "run_id": next(iter(run_ids), manifest.get("run_id")),
+        "trace_sha256": next(iter(trace_digests), manifest.get("trace_sha256")),
+        "required_cases": sorted(required),
+        "completed_cases": sorted(seen_cases),
+        "missing_cases": missing,
+        "errors": errors,
+        "cases": case_summaries,
+        "proxy_note": "no_store recompute latency is a fixed proxy, not model execution",
+    }
+    (output / "conclusion.json").write_text(
+        json.dumps(conclusion, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return conclusion
+
+
+def _write_manifest(path: Path, events: list[TraceEvent], parameters: dict[str, Any], seed: int, run_id: str | None) -> dict[str, Any]:
+    manifest = manifest_for(events, seed=seed, parameters=parameters)
+    if run_id is not None:
+        manifest["run_id"] = run_id
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def _generate_command(args: argparse.Namespace) -> int:
+    output = Path(args.output)
     parameters = {
-        "requests": args.requests,
-        "blocks_per_request": args.blocks_per_request,
-        "block_size": args.block_size,
-        "reuse_ratio": args.reuse_ratio,
-        "concurrency": args.concurrency,
-        "policy": args.policy,
+        "requests": args.requests, "blocks_per_request": args.blocks_per_request,
+        "block_size": args.block_size, "reuse_ratio": args.reuse_ratio,
+        "concurrency": args.concurrency, "policy": args.policy,
     }
     events = generate_trace(seed=args.seed, **parameters)
-    digest = write_trace(args.output, events)
-    manifest = manifest_for(events, seed=args.seed, parameters=parameters)
-    manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"events": len(events), "trace_sha256": digest, "manifest": str(manifest_path)}))
+    digest = write_trace(output / "trace.jsonl", events)
+    _write_manifest(output / "manifest.json", events, parameters, args.seed, args.run_id)
+    print(json.dumps({"events": len(events), "trace_sha256": digest, "manifest": str(output / "manifest.json")}))
     return 0
+
+
+def _replay_command(args: argparse.Namespace) -> int:
+    output = Path(args.output)
+    events = read_trace(args.trace)
+    result = replay_trace(events, mode=args.mode, target=args.target, recompute_us=args.recompute_us)
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else {}
+    result.update({"case_id": args.case_id, "run_id": args.run_id or manifest.get("run_id"), "trace_sha256": manifest.get("trace_sha256")})
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return 0 if result["status"] == "pass" else 1
+
+
+def _summarize_command(args: argparse.Namespace) -> int:
+    conclusion = summarize_results(args.result_dir, required_cases=args.required_case)
+    print(json.dumps(conclusion, indent=2, sort_keys=True))
+    return 0 if conclusion["status"] == "pass" else 1
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command")
+
+    def add_generation_options(command: argparse.ArgumentParser) -> None:
+        command.add_argument("output", type=Path)
+        command.add_argument("--requests", type=int, default=12)
+        command.add_argument("--blocks-per-request", type=int, default=4)
+        command.add_argument("--block-size", type=int, default=131072)
+        command.add_argument("--reuse-ratio", type=float, default=0.5)
+        command.add_argument("--concurrency", type=int, default=1)
+        command.add_argument("--policy", choices=sorted(POLICIES), default="round_robin")
+        command.add_argument("--seed", type=int, default=0)
+        command.add_argument("--run-id")
+
+    generate_parser = subparsers.add_parser("generate")
+    add_generation_options(generate_parser)
+    replay_parser = subparsers.add_parser("replay")
+    replay_parser.add_argument("trace", type=Path)
+    replay_parser.add_argument("output", type=Path)
+    replay_parser.add_argument("--mode", choices=sorted(REPLAY_MODES), required=True)
+    replay_parser.add_argument("--target", choices=sorted(DESCRIPTOR_TARGETS))
+    replay_parser.add_argument("--manifest", type=Path)
+    replay_parser.add_argument("--case-id", required=True)
+    replay_parser.add_argument("--run-id")
+    replay_parser.add_argument("--recompute-us", type=int, default=1000)
+    summarize_parser = subparsers.add_parser("summarize")
+    summarize_parser.add_argument("result_dir", type=Path)
+    summarize_parser.add_argument("--required-case", action="append", default=[])
+
+    argv = sys.argv[1:]
+    if argv and argv[0] not in {"generate", "replay", "summarize", "-h", "--help"}:
+        argv.insert(0, "generate")
+    args = parser.parse_args(argv)
+    if args.command == "generate":
+        return _generate_command(args)
+    if args.command == "replay":
+        return _replay_command(args)
+    if args.command == "summarize":
+        return _summarize_command(args)
+
+    # Preserve the original ``kv_workload.py output.jsonl`` generator interface.
+    parser.error("a command is required (generate, replay, or summarize)")
+    return 2
 
 
 if __name__ == "__main__":

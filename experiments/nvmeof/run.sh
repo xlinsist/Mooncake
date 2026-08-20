@@ -31,6 +31,63 @@ run_store_python() {
     TRANSPARENT_RUN_ID="${TRANSPARENT_RUN_ID:-}" python3 "$@"
 }
 
+kv_workload_dir() {
+  if [[ -n ${KV_WORKLOAD_RESULT_DIR:-} ]]; then
+    printf '%s\n' "$KV_WORKLOAD_RESULT_DIR"
+  else
+    local run_id=${KV_WORKLOAD_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+    printf '%s\n' "$RESULT_DIR/kv-workload/$run_id"
+  fi
+}
+
+kv_workload_generate() {
+  local out
+  out=$(kv_workload_dir)
+  mkdir -p "$out"
+  local args=("$(dirname "$0")/kv_workload.py" generate "$out" \
+    --requests "${KV_WORKLOAD_REQUESTS:-12}" \
+    --blocks-per-request "${KV_WORKLOAD_BLOCKS_PER_REQUEST:-4}" \
+    --block-size "${KV_WORKLOAD_BLOCK_SIZE:-131072}" \
+    --reuse-ratio "${KV_WORKLOAD_REUSE_RATIO:-0.5}" \
+    --concurrency "${KV_WORKLOAD_CONCURRENCY:-1}" \
+    --policy "${KV_WORKLOAD_POLICY:-round_robin}" \
+    --seed "${KV_WORKLOAD_SEED:-0}")
+  [[ -n ${KV_WORKLOAD_RUN_ID:-} ]] && args+=(--run-id "$KV_WORKLOAD_RUN_ID")
+  python3 "${args[@]}"
+}
+
+kv_workload_replay() {
+  local out trace manifest mode target case_id run_id
+  out=$(kv_workload_dir)
+  trace=${KV_WORKLOAD_TRACE:-$out/trace.jsonl}
+  manifest=${KV_WORKLOAD_MANIFEST:-$out/manifest.json}
+  mode=${KV_WORKLOAD_MODE:-no_store}
+  target=${KV_WORKLOAD_TARGET:-}
+  case_id=${KV_WORKLOAD_CASE_ID:-$mode${target:+-$target}}
+  run_id=${KV_WORKLOAD_RUN_ID:-}
+  [[ -f "$trace" ]] || die "KV workload trace is missing: $trace"
+  mkdir -p "$out"
+  local args=("$(dirname "$0")/kv_workload.py" replay "$trace" "$out/raw-$case_id.json"
+    --mode "$mode" --case-id "$case_id" --recompute-us "${KV_WORKLOAD_RECOMPUTE_US:-1000}")
+  [[ -f "$manifest" ]] && args+=(--manifest "$manifest")
+  [[ -n $target ]] && args+=(--target "$target")
+  [[ -n $run_id ]] && args+=(--run-id "$run_id")
+  if [[ $mode == no_store ]]; then
+    python3 "${args[@]}"
+  else
+    [[ -n ${TRANSPARENT_RUN_ID:-} || $mode == direct ]] || die "set TRANSPARENT_RUN_ID for Store replay"
+    [[ $target != local_nvme ]] || ENABLE_SSD_OFFLOAD=1
+    run_store_python "${args[@]}"
+  fi
+}
+
+kv_workload_summarize() {
+  local out
+  out=${KV_WORKLOAD_RESULT_DIR:-$(kv_workload_dir)}
+  python3 "$(dirname "$0")/kv_workload.py" summarize "$out" \
+    ${KV_WORKLOAD_REQUIRED_CASES:+$(printf '%s\n' "$KV_WORKLOAD_REQUIRED_CASES" | tr ',' '\n' | sed 's/^/--required-case /')}
+}
+
 require_transparent_run_id() {
   : "${TRANSPARENT_RUN_ID:?set TRANSPARENT_RUN_ID to a unique acceptance batch ID}"
 }
@@ -593,6 +650,9 @@ case ${1:-help} in
     [[ -n ${SAME_SSD_RESULT_DIR:-} ]] || die "set SAME_SSD_RESULT_DIR to a same-SSD result directory"
     python3 "$(dirname "$0")/same_ssd.py" summarize "$SAME_SSD_RESULT_DIR"
     ;;
+  kv-workload-generate) kv_workload_generate ;;
+  kv-workload-replay) kv_workload_replay ;;
+  kv-workload-summarize) kv_workload_summarize ;;
   characterize-summarize)
     python3 "$(dirname "$0")/characterize.py" summarize "$RESULT_DIR/characterization"
     python3 "$(dirname "$0")/characterize.py" plot "$RESULT_DIR/characterization/summary.csv" "$RESULT_DIR/characterization"
