@@ -263,3 +263,79 @@ descriptor 和环境 inventory。只在当前两节点拓扑范围内解释结�
 先执行 Step 1–4 的离线开发和测试，再执行 Step 5 的两节点硬件矩阵。
 不要先扩容节点。只有当 trace replay 显示明确的 workload 级现象、且
 论文问题转向“多 SSD 扩展性”时，才另行规划第三节点或更多 SSD。
+
+## 10. 2026-08-21 恢复执行计划
+
+本节把远端预检后的恢复动作固定下来。目标是使用与本地实验提交完全一致
+的干净客户端 worktree，不覆盖原有 dirty checkout，也不把临时构建产物提交
+到源码分支。
+
+### Phase A：源码与 worktree 固化
+
+1. 本地实验提交必须通过专用分支同步：
+   `origin/codex/kv-workload-hardware-20260821`。
+2. 远端保留原 `/sharenvme/userhome/zhouxulin/mooncake-nof-phase1/Mooncake`
+   及 `backup/kv-workload-preflight-20260821`；硬件客户端使用
+   `/sharenvme/userhome/zhouxulin/mooncake-kv-workload-8bb8e674`。
+3. 进入硬件阶段前，干净 worktree 的 `git rev-parse HEAD` 必须等于本地
+   实验提交 `8bb8e674`，`git status --short` 必须为空，并且
+   `experiments/nvmeof/kv_workload.py` 与 `run.sh` 都存在。
+4. 原 checkout 的 4 个源码 diff 和所有未跟踪目录只可作为备份/取证，不得
+   复制进新 worktree 或混入硬件结果。
+
+### Phase B：匹配构建与离线门槛
+
+1. 在干净 worktree 新建独立 `build-nof`，使用 `USE_NOF=ON`、Release 配置
+   和当前远端实际可用的 SPDK include/library；不得复用旧 dirty checkout
+   的 CMake cache 来声称版本匹配。
+2. 构建并记录 `mooncake_master`、`nof_worker_pool_bench` 和 Python Store
+   binding 的绝对路径、SHA-256、Git commit 与 Python `module.__file__`。
+3. 远端若没有 pytest/ruff，只能标记为环境缺口；硬件 smoke 仍必须通过
+   `python3 -m py_compile`、`bash -n experiments/nvmeof/run.sh`、binding
+   import 和构件路径检查，不得把缺少测试工具报告为测试通过。
+4. 构建失败、binding 无法导入、构件来自旧 worktree 或 commit 不匹配时，
+   停止所有 Store 写入并在 08 结果文档记录 blocker。
+
+### Phase C：硬件预检与统一 trace
+
+1. 在客户端执行只读预检：Master `10.0.0.34:50051` 监听、目标机
+   `mooncake-nof-spdk.service` 为 `active`、客户端 `sudo -n true` 成功，
+   并记录 Master policy、NoF 注册状态、两端 commit、构件清单和环境快照。
+2. 生成一次带 `run_id`、seed、参数和 digest 的 trace manifest；五个 case
+   只能引用同一个 `trace.jsonl` 和 manifest，禁止每个 case 隐式重生成 trace。
+3. 结果根目录固定为 `results/<run-id>/kv-workload/`；每个 case 必须写入
+   `raw-<case-id>.json`，并带相同 run ID、trace digest 和 manifest digest。
+4. 任一前置条件不满足，停止在硬件写入之前；不得生成伪造的 raw JSON、CSV
+   或 `status=pass` 的 `conclusion.json`。
+
+### Phase D：最小两节点 hardware smoke
+
+按同一 manifest 顺序执行且逐 case 验证：
+
+1. `no_store`：确认离线重算 proxy 与 trace 统计可用，不把它当作存储性能。
+2. `direct-local`：显式 local backend，校验每个 `put/get/remove`、实际
+   descriptor、run ID 和 trace digest。
+3. `transparent-local`：Master local policy，使用同一对象/并发/trace，校验
+   descriptor 不被 policy 字段替代。
+4. `direct-remote`：显式 remote NoF backend，单独报告 remote descriptor。
+5. `transparent-remote`：Master remote policy，单独报告 remote descriptor。
+
+本阶段只覆盖单请求/单 block 的 `reuse_ratio=0%/90%` smoke；不执行 HA、NoF
+故障恢复、多 SSD、多节点或背景负载扩展。每个 case 的成功条件是：所有必需
+事件完成，`put/get/remove` 无错误，descriptor 与目标一致，trace/run ID
+一致，且 replay runner 返回成功退出码。
+
+### Phase E：汇总、报告与停止条件
+
+1. 运行 `kv-workload-summarize` 生成 `operations.csv`、`summary.csv` 和
+   `conclusion.json`；缺失 case、重复不完整、digest/run ID 混用或失败操作
+   必须得到 `status=inconclusive`。
+2. 只把两节点证据写入 08 结果文档，分别报告 local/remote，不合并成集群
+   级结论；no-store latency 明确标注为固定重算 proxy。
+3. 硬件通过后运行相关 pytest、ruff、`bash -n` 和 `git diff --check`；远端
+   工具不可用时记录确切命令和环境缺口，并使用本地同提交验证作为补充证据。
+4. 每个已验证里程碑只提交相关文件；结果原始 JSON/CSV 保留在 Git 忽略的
+   `results/<run-id>/`，文档和 durable ledger 单独提交。
+5. 只有五个 smoke case 全部满足成功条件、汇总 `status=pass` 且审查确认
+   没有超出两节点边界时，才允许把 G004 标记为 complete；否则保持
+   `in_progress` 并记录真实 blocker。
