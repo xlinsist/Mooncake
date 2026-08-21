@@ -38,9 +38,9 @@ proxy，不是模型执行时间，也不是 Mooncake 存储性能结果。
 | Master | `10.0.0.34:50051` TCP 可连接，`ss` 显示 LISTEN | pass |
 | NoF service | `intel-bigmem`: `mooncake-nof-spdk.service` = `active` | pass |
 | `sudo -n` | 客户端本地 `sudo -n true` 返回 `sudo: a password is required` | **blocker** |
-| 远端 workload 构件 | `kv_workload.py` 在源码树存在；`build-nof`、`mooncake_master`、`nof_worker_pool_bench` 和 Python binding 均存在且 binding 可导入 | pass（但提交不匹配） |
+| 远端 workload 构件 | 远端 checkout 中未发现 `kv_workload.py`；但 `build-nof`、`mooncake_master`、`nof_worker_pool_bench` 和 Python binding 存在且 binding 可导入 | **blocker**（提交不匹配且 workload 文件缺失） |
 
-由于提交未同步、远端工作树 dirty 且客户端非交互 sudo 不可用，硬件写入被
+由于提交未同步、远端工作树 dirty、远端缺少 `kv_workload.py` 且客户端非交互 sudo 不可用，硬件写入被
 明确停止；没有伪造五个 case 的 raw JSON、CSV 或 conclusion。目标机 service
 active 和 Master 已监听不能抵消这些客户端安全门槛。
 
