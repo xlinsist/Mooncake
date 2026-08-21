@@ -2,7 +2,7 @@
 
 ## 状态
 
-截至 2026-08-20，离线 workload 链路已验证；两节点 Store replay 尚未完成。
+截至 2026-08-21，离线 workload 链路已验证；两节点 Store replay 尚未完成。
 
 离线结果目录为被 Git 忽略的：
 
@@ -28,14 +28,21 @@ proxy，不是模型执行时间，也不是 Mooncake 存储性能结果。
 
 ## 两节点硬件状态
 
-本次未形成 local/direct/transparent 的真实 Store workload 结果。执行前置
-检查时发现：
+本次仍未形成 local/direct/transparent 的真实 Store workload 结果。2026-08-21
+只读预检证据如下：
 
-- `10.0.0.34:50051` 的 Master RPC 未监听；
-- 当前客户端 `sudo -n true` 返回需要密码，无法满足 NoF/本地后端运行的
-  非交互权限要求；
-- 目标机 `intel-bigmem` 的 `mooncake-nof-spdk.service` 虽为 active，但不能
-  单独证明 Master、客户端和注册状态可用。
+| 检查项 | 证据 | 结果 |
+| --- | --- | --- |
+| 本地/客户端提交同步 | local `31735b80c39954cdeca36f4d45b9bcbc5f6634c1`；客户端 `da2f5be07f1901ba1825da0caa94d65698dd2726` | **fail** |
+| 客户端远端工作树 | 11 条未提交修改/未跟踪项；未覆盖 | **blocker** |
+| Master | `10.0.0.34:50051` TCP 可连接，`ss` 显示 LISTEN | pass |
+| NoF service | `intel-bigmem`: `mooncake-nof-spdk.service` = `active` | pass |
+| `sudo -n` | 客户端本地 `sudo -n true` 返回 `sudo: a password is required` | **blocker** |
+| 远端 workload 构件 | `kv_workload.py` 在源码树存在；`build-nof`、`mooncake_master`、`nof_worker_pool_bench` 和 Python binding 均存在且 binding 可导入 | pass（但提交不匹配） |
+
+由于提交未同步、远端工作树 dirty 且客户端非交互 sudo 不可用，硬件写入被
+明确停止；没有伪造五个 case 的 raw JSON、CSV 或 conclusion。目标机 service
+active 和 Master 已监听不能抵消这些客户端安全门槛。
 
 因此不能从本文件推出 local/remote 的 request-level 优劣、transparent
 收益、TTFT proxy 或两节点硬件 workload 结论。硬件阶段必须在 Master、
