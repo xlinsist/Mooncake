@@ -311,6 +311,8 @@ def replay_trace(
     store = None
     config = None
     live_keys: set[str] = set()
+    active_keys: dict[str, str] = {}
+    block_generations: dict[str, int] = {}
     descriptors: dict[str, dict[str, Any]] = {}
     try:
         if mode != "no_store":
@@ -319,7 +321,17 @@ def replay_trace(
                 config = config_factory(target)
 
         for event_index, event in enumerate(materialized):
-            key = f"{key_prefix}-{event.block_id}"
+            if event.operation == "produce":
+                generation = block_generations.get(event.block_id, 0) + 1
+                block_generations[event.block_id] = generation
+                key = (
+                    f"{key_prefix}-{event.block_id}-generation-{generation:06d}"
+                )
+                active_keys[event.block_id] = key
+            elif event.operation in ("reuse", "evict"):
+                key = active_keys[event.block_id]
+            else:
+                key = f"{key_prefix}-{event.block_id}-miss"
             record: dict[str, Any] = {
                 "event_index": event_index,
                 "timestamp_us": event.timestamp_us,
@@ -346,6 +358,8 @@ def replay_trace(
                     record["latency_us"] = (
                         0.0 if event.operation == "evict" else float(recompute_us)
                     )
+                    if event.operation == "evict":
+                        active_keys.pop(event.block_id)
                     continue
 
                 payload = _block_payload(event.block_id, event.block_size)
@@ -397,6 +411,7 @@ def replay_trace(
                     if rc != 0:
                         raise RuntimeError(f"remove returned {rc}")
                     live_keys.discard(key)
+                    active_keys.pop(event.block_id)
                     descriptors.pop(event.block_id, None)
             except Exception as error:
                 record["error"] = str(error)

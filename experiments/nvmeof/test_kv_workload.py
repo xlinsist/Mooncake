@@ -139,6 +139,34 @@ def test_transparent_replay_records_and_revalidates_actual_descriptor():
     assert store.closed
 
 
+def test_replay_uses_a_new_store_key_after_eviction():
+    events = [
+        TraceEvent(0, "request-1", "prefix", "block", 4096, "produce", "local_only"),
+        TraceEvent(1, "request-1", "prefix", "block", 4096, "evict", "local_only"),
+        TraceEvent(2, "request-2", "prefix", "block", 4096, "produce", "local_only"),
+        TraceEvent(3, "request-2", "prefix", "block", 4096, "reuse", "local_only"),
+        TraceEvent(4, "cleanup", "prefix", "block", 4096, "evict", "local_only"),
+    ]
+    store = FakeStore()
+
+    result = replay_trace(
+        events,
+        mode="transparent",
+        target="local_nvme",
+        store_factory=lambda: store,
+        descriptor_reader=descriptor,
+    )
+
+    assert result["status"] == "pass"
+    first_key = result["operations"][0]["key"]
+    second_key = result["operations"][2]["key"]
+    assert first_key.endswith("generation-000001")
+    assert second_key.endswith("generation-000002")
+    assert first_key != second_key
+    assert result["operations"][3]["key"] == second_key
+    assert result["operations"][4]["key"] == second_key
+
+
 @pytest.mark.parametrize("target", ["local_nvme", "remote_nof"])
 def test_transparent_replay_explicit_target_overrides_trace_policy(target):
     result = replay_trace(
