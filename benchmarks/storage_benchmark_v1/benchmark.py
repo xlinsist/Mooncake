@@ -645,8 +645,15 @@ def format_storage_stats(stats: Dict, title: str = "Storage"):
         output.append(f"  Scheduled Span:   {pacing.get('scheduled_span_s', 0):.3f} s")
         output.append(f"  Completion Lag:   {pacing.get('completion_lag_s', 0):.3f} s")
         output.append(
+            f"  Arrival Lag P50:  "
+            f"{pacing.get('arrival_lag_ms', {}).get('p50_ms', 0):.3f} ms"
+        )
+        output.append(
             f"  Arrival Lag P95:  "
             f"{pacing.get('arrival_lag_ms', {}).get('p95_ms', 0):.3f} ms"
+        )
+        output.append(
+            f"  Arrival Lag Max:  {pacing.get('arrival_lag_max_ms', 0):.3f} ms"
         )
 
     # Request Stats
