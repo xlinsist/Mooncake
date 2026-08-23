@@ -50,20 +50,10 @@ active 和 Master 已监听不能抵消这些客户端安全门槛。
 
 ## 下一次硬件执行入口
 
-使用同一 trace manifest，分别执行 `no_store`、指定 backend 的 `direct` 和
-Master policy 驱动的 `transparent`，再运行：
-
-```bash
-KV_WORKLOAD_RESULT_DIR=results/kv-workload-<run-id> \
-  ./run.sh kv-workload-replay
-KV_WORKLOAD_RESULT_DIR=results/kv-workload-<run-id> \
-  KV_WORKLOAD_REQUIRED_CASES=no_store,direct-local,transparent-local,\
-direct-remote,transparent-remote \
-  ./run.sh kv-workload-summarize
-```
-
-只有真实 `put/get/remove` 全部成功、descriptor 与目标一致、每个 case 有
-完整重复且 summary 为 `status=pass` 时，才能更新 request-level 结论。
+下一次两节点硬件 smoke 按
+[`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)
+执行。该文档统一维护源码与构建一致性、只读预检、五个 case、停止条件和
+验收标准；本文件只记录已经产生的结果和 blocker。
 
 当前结论范围仍限制在两节点、两 SSD 拓扑；不声称多 SSD 扩展性、HA 或
 NoF 服务恢复能力。

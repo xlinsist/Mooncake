@@ -185,8 +185,8 @@ TRANSPARENT_BENCH_TARGET=remote_nof ./run.sh transparent-overhead
 ./run.sh transparent-software-verification
 ```
 
-当前命令固定执行五项检查：相关 CMake targets 构建、相关 CTest、Master HA
-descriptor 恢复测试、`experiments/nvmeof/test_correctness.py` 和对既定 NVMe-oF
+当前命令固定执行五项检查：相关 CMake targets 构建、相关 CTest、descriptor
+持久化回归测试、`experiments/nvmeof/test_correctness.py` 和对既定 NVMe-oF
 源文件的 PR-scoped pre-commit。报告必须有五条命令、五个零退出码，且
 `commands_passed == commands_required == 5`。缺失工具也按失败处理，不得手工
 把 JSON 改成 pass。
