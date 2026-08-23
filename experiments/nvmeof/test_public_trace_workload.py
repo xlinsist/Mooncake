@@ -49,6 +49,30 @@ def test_conversion_is_deterministic_and_lru_bounded():
     )
 
 
+def test_conversion_can_preserve_batched_arrival_timestamps():
+    requests = [
+        {"timestamp": 10, "hash_ids": [1, 2]},
+        {"timestamp": 13, "hash_ids": [1, 3]},
+    ]
+
+    events = convert_public_trace(
+        requests,
+        block_size=4096,
+        capacity_pages=2,
+        preserve_arrivals=True,
+    )
+
+    assert [event.timestamp_us for event in events] == [
+        0,
+        0,
+        3000,
+        3000,
+        3000,
+        3000,
+        3000,
+    ]
+
+
 def test_read_public_trace_requires_exact_valid_request_count(tmp_path):
     trace = tmp_path / "trace.jsonl"
     trace.write_text(
@@ -73,6 +97,7 @@ def test_read_public_trace_requires_exact_valid_request_count(tmp_path):
     [
         ({"timestamp": 0, "hash_ids": []}, "non-empty hash_ids"),
         ({"timestamp": -1, "hash_ids": [1]}, "invalid timestamp"),
+        ({"timestamp": float("nan"), "hash_ids": [1]}, "invalid timestamp"),
         ({"timestamp": 0, "hash_ids": ["1"]}, "invalid hash_ids"),
     ],
 )
@@ -82,6 +107,23 @@ def test_read_public_trace_rejects_invalid_rows(tmp_path, trace_row, error):
 
     with pytest.raises(ValueError, match=error):
         read_public_trace(trace, max_requests=1)
+
+
+def test_read_public_trace_rejects_decreasing_timestamps(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(request)
+            for request in [
+                {"timestamp": 2, "hash_ids": [1]},
+                {"timestamp": 1, "hash_ids": [2]},
+            ]
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="decreasing timestamp"):
+        read_public_trace(trace, max_requests=2)
 
 
 def test_conversion_rejects_invalid_capacity_and_alignment():

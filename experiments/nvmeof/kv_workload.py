@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import random
 import sys
 import time
@@ -272,6 +273,8 @@ def replay_trace(
         _descriptor_for
     ),
     clock_ns: Callable[[], int] = time.perf_counter_ns,
+    sleeper: Callable[[float], None] = time.sleep,
+    replay_scale: float = 0.0,
 ) -> dict[str, Any]:
     """Replay a validated trace in timestamp order and return raw case results.
 
@@ -284,6 +287,8 @@ def replay_trace(
         raise ValueError(f"unsupported replay mode: {mode}")
     if recompute_us < 0:
         raise ValueError("recompute_us must be non-negative")
+    if not math.isfinite(replay_scale) or replay_scale < 0:
+        raise ValueError("replay_scale must be finite and non-negative")
     if target is not None and target not in ("local_nvme", "remote_nof"):
         raise ValueError(f"unsupported replay target: {target}")
     if mode == "direct" and target not in ("local_nvme", "remote_nof"):
@@ -304,6 +309,11 @@ def replay_trace(
             if mode == "no_store"
             else None
         ),
+        "pacing": {
+            "enabled": replay_scale > 0,
+            "replay_scale": replay_scale,
+            "source_timestamp_unit": "microseconds",
+        },
     }
     if not materialized:
         return result
@@ -314,19 +324,41 @@ def replay_trace(
     active_keys: dict[str, str] = {}
     block_generations: dict[str, int] = {}
     descriptors: dict[str, dict[str, Any]] = {}
+    pacing_started_ns: int | None = None
+    first_timestamp_us = materialized[0].timestamp_us
+    schedule_sleep_us = 0.0
+    modeled_work_sleep_us = 0.0
+    max_arrival_lag_us = 0.0
     try:
         if mode != "no_store":
             store = store_factory()
             if mode == "direct":
                 config = config_factory(target)
+        if replay_scale > 0:
+            pacing_started_ns = clock_ns()
 
         for event_index, event in enumerate(materialized):
+            scheduled_offset_us = None
+            arrival_lag_us = None
+            if pacing_started_ns is not None:
+                scheduled_offset_us = (
+                    event.timestamp_us - first_timestamp_us
+                ) / replay_scale
+                now_ns = clock_ns()
+                delay_us = scheduled_offset_us - ((now_ns - pacing_started_ns) / 1_000)
+                if delay_us > 0:
+                    sleeper(delay_us / 1_000_000)
+                    schedule_sleep_us += delay_us
+                    now_ns = clock_ns()
+                arrival_lag_us = max(
+                    0.0,
+                    (now_ns - pacing_started_ns) / 1_000 - scheduled_offset_us,
+                )
+                max_arrival_lag_us = max(max_arrival_lag_us, arrival_lag_us)
             if event.operation == "produce":
                 generation = block_generations.get(event.block_id, 0) + 1
                 block_generations[event.block_id] = generation
-                key = (
-                    f"{key_prefix}-{event.block_id}-generation-{generation:06d}"
-                )
+                key = f"{key_prefix}-{event.block_id}-generation-{generation:06d}"
                 active_keys[event.block_id] = key
             elif event.operation in ("reuse", "evict"):
                 key = active_keys[event.block_id]
@@ -347,6 +379,8 @@ def replay_trace(
                 "descriptor": None,
                 "return_code": 0,
                 "latency_us": 0.0,
+                "scheduled_offset_us": scheduled_offset_us,
+                "arrival_lag_us": arrival_lag_us,
                 "error": None,
             }
             result["operations"].append(record)
@@ -360,6 +394,9 @@ def replay_trace(
                     )
                     if event.operation == "evict":
                         active_keys.pop(event.block_id)
+                    elif pacing_started_ns is not None and recompute_us > 0:
+                        sleeper(recompute_us / 1_000_000)
+                        modeled_work_sleep_us += recompute_us
                     continue
 
                 payload = _block_payload(event.block_id, event.block_size)
@@ -424,6 +461,23 @@ def replay_trace(
         result["errors"].append({"event_index": None, "key": None, "error": str(error)})
         result["status"] = "fail"
     finally:
+        if pacing_started_ns is not None:
+            processing_wall_us = (clock_ns() - pacing_started_ns) / 1_000
+            scheduled_span_us = (
+                materialized[-1].timestamp_us - first_timestamp_us
+            ) / replay_scale
+            result["pacing"].update(
+                {
+                    "scheduled_span_us": round(scheduled_span_us, 6),
+                    "processing_wall_us": round(processing_wall_us, 6),
+                    "completion_lag_us": round(
+                        max(0.0, processing_wall_us - scheduled_span_us), 6
+                    ),
+                    "schedule_sleep_us": round(schedule_sleep_us, 6),
+                    "modeled_work_sleep_us": round(modeled_work_sleep_us, 6),
+                    "max_arrival_lag_us": round(max_arrival_lag_us, 6),
+                }
+            )
         if store is not None:
             for key in sorted(live_keys):
                 try:
@@ -495,6 +549,8 @@ def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, 
                 "store_operation": operation.get("store_operation") or "noop",
                 "descriptor_target": target or "",
                 "latency_us": latency,
+                "scheduled_offset_us": operation.get("scheduled_offset_us"),
+                "arrival_lag_us": operation.get("arrival_lag_us"),
                 "return_code": operation.get("return_code", 0),
             }
         )
@@ -551,6 +607,11 @@ def summarize_results(
                 sum(row["latency_us"] for row in group)
                 for group in request_rows.values()
             ]
+            request_arrival_lags = [
+                float(group[0]["arrival_lag_us"])
+                for group in request_rows.values()
+                if group[0]["arrival_lag_us"] is not None
+            ]
             request_count = len(request_rows)
             hit_requests = sum(
                 any(row["operation"] == "reuse" for row in group)
@@ -587,7 +648,22 @@ def summarize_results(
                     "miss_rate": round(misses / len(rows), 6) if rows else None,
                     "request_p50_latency_us": _percentile(request_latencies, 50),
                     "request_p95_latency_us": _percentile(request_latencies, 95),
+                    "request_arrival_lag_p50_us": _percentile(request_arrival_lags, 50),
+                    "request_arrival_lag_p95_us": _percentile(request_arrival_lags, 95),
+                    "request_arrival_lag_max_us": round(max(request_arrival_lags), 6)
+                    if request_arrival_lags
+                    else None,
                     "storage_wait_us": round(storage_wait, 6),
+                    "replay_scale": result.get("pacing", {}).get("replay_scale", 0),
+                    "scheduled_span_us": result.get("pacing", {}).get(
+                        "scheduled_span_us"
+                    ),
+                    "processing_wall_us": result.get("pacing", {}).get(
+                        "processing_wall_us"
+                    ),
+                    "completion_lag_us": result.get("pacing", {}).get(
+                        "completion_lag_us"
+                    ),
                     "cpu_utilization_pct": result.get("cpu_utilization_pct"),
                     "produce": sum(row["operation"] == "produce" for row in rows),
                     "reuse": sum(row["operation"] == "reuse" for row in rows),
@@ -624,6 +700,8 @@ def summarize_results(
         "store_operation",
         "descriptor_target",
         "latency_us",
+        "scheduled_offset_us",
+        "arrival_lag_us",
         "return_code",
     ]
     with (output / "operations.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -651,7 +729,14 @@ def summarize_results(
         "miss_rate",
         "request_p50_latency_us",
         "request_p95_latency_us",
+        "request_arrival_lag_p50_us",
+        "request_arrival_lag_p95_us",
+        "request_arrival_lag_max_us",
         "storage_wait_us",
+        "replay_scale",
+        "scheduled_span_us",
+        "processing_wall_us",
+        "completion_lag_us",
         "cpu_utilization_pct",
         "local",
         "remote",
@@ -735,6 +820,7 @@ def _replay_command(args: argparse.Namespace) -> int:
         target=args.target,
         key_prefix=key_prefix,
         recompute_us=args.recompute_us,
+        replay_scale=args.replay_scale,
     )
     result.update(
         {
@@ -784,6 +870,7 @@ def _main() -> int:
     replay_parser.add_argument("--case-id", required=True)
     replay_parser.add_argument("--run-id")
     replay_parser.add_argument("--recompute-us", type=int, default=1000)
+    replay_parser.add_argument("--replay-scale", type=float, default=0.0)
     summarize_parser = subparsers.add_parser("summarize")
     summarize_parser.add_argument("result_dir", type=Path)
     summarize_parser.add_argument("--required-case", action="append", default=[])

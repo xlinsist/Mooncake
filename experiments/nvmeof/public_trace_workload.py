@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable
@@ -44,9 +45,17 @@ def read_public_trace(path: str | Path, *, max_requests: int) -> list[dict]:
                     f"public trace line {line_number} has invalid hash_ids"
                 )
             timestamp = request.get("timestamp")
-            if not isinstance(timestamp, (int, float)) or timestamp < 0:
+            if (
+                not isinstance(timestamp, (int, float))
+                or not math.isfinite(timestamp)
+                or timestamp < 0
+            ):
                 raise ValueError(
                     f"public trace line {line_number} has invalid timestamp"
+                )
+            if requests and timestamp < requests[-1]["timestamp"]:
+                raise ValueError(
+                    f"public trace line {line_number} has decreasing timestamp"
                 )
             requests.append(request)
 
@@ -63,6 +72,7 @@ def convert_public_trace(
     block_size: int,
     capacity_pages: int,
     policy: str = "round_robin",
+    preserve_arrivals: bool = False,
 ) -> list[TraceEvent]:
     if block_size <= 0 or block_size % 512 != 0:
         raise ValueError("block_size must be a positive 512-byte multiple")
@@ -73,10 +83,21 @@ def convert_public_trace(
 
     live_pages: OrderedDict[str, None] = OrderedDict()
     events: list[TraceEvent] = []
-    timestamp_us = 0
+    synthetic_timestamp_us = 0
+    base_timestamp_ms: float | None = None
 
-    def append_event(request_id: str, block_id: str, operation: str) -> None:
-        nonlocal timestamp_us
+    def append_event(
+        request_id: str,
+        block_id: str,
+        operation: str,
+        request_timestamp_us: int | None,
+    ) -> None:
+        nonlocal synthetic_timestamp_us
+        timestamp_us = (
+            synthetic_timestamp_us
+            if request_timestamp_us is None
+            else request_timestamp_us
+        )
         events.append(
             TraceEvent(
                 timestamp_us=timestamp_us,
@@ -88,25 +109,38 @@ def convert_public_trace(
                 policy=policy,
             )
         )
-        timestamp_us += 1
+        if request_timestamp_us is None:
+            synthetic_timestamp_us += 1
 
     for request_index, request in enumerate(requests):
+        if base_timestamp_ms is None:
+            base_timestamp_ms = float(request["timestamp"])
+        request_timestamp_us = (
+            round((float(request["timestamp"]) - base_timestamp_ms) * 1_000)
+            if preserve_arrivals
+            else None
+        )
         request_id = f"request-{request_index:05d}"
         for hash_id in request["hash_ids"]:
             block_id = f"page-{hash_id}"
             if block_id in live_pages:
                 live_pages.move_to_end(block_id)
-                append_event(request_id, block_id, "reuse")
+                append_event(request_id, block_id, "reuse", request_timestamp_us)
                 continue
 
             if len(live_pages) >= capacity_pages:
                 evicted_block_id, _ = live_pages.popitem(last=False)
-                append_event(request_id, evicted_block_id, "evict")
-            append_event(request_id, block_id, "produce")
+                append_event(
+                    request_id, evicted_block_id, "evict", request_timestamp_us
+                )
+            append_event(request_id, block_id, "produce", request_timestamp_us)
             live_pages[block_id] = None
 
+    cleanup_timestamp_us = (
+        events[-1].timestamp_us if preserve_arrivals and events else None
+    )
     for block_id in list(live_pages):
-        append_event("cleanup", block_id, "evict")
+        append_event("cleanup", block_id, "evict", cleanup_timestamp_us)
     return events
 
 
@@ -125,6 +159,7 @@ def convert_command(args: argparse.Namespace) -> int:
         block_size=args.block_size,
         capacity_pages=args.capacity_pages,
         policy=args.policy,
+        preserve_arrivals=args.preserve_arrivals,
     )
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -136,6 +171,8 @@ def convert_command(args: argparse.Namespace) -> int:
         "block_size": args.block_size,
         "capacity_pages": args.capacity_pages,
         "policy": args.policy,
+        "preserve_arrivals": args.preserve_arrivals,
+        "source_timestamp_unit": "milliseconds",
     }
     manifest = manifest_for(events, seed=0, parameters=parameters)
     manifest.update(
@@ -171,6 +208,7 @@ def main() -> int:
     parser.add_argument("--block-size", type=int, default=131072)
     parser.add_argument("--capacity-pages", type=int, default=64)
     parser.add_argument("--policy", choices=sorted(POLICIES), default="round_robin")
+    parser.add_argument("--preserve-arrivals", action="store_true")
     parser.add_argument("--run-id", required=True)
     return convert_command(parser.parse_args())
 

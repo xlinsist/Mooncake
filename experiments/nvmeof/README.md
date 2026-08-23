@@ -173,22 +173,37 @@ converted-trace SHA-256 digests in the manifest:
 python3 public_trace_workload.py /path/to/conversation.jsonl \
   results/public-trace/conversation \
   --requests 100 --capacity-pages 64 --block-size 131072 \
-  --run-id conversation-100
+  --preserve-arrivals --run-id conversation-100
 
 KV_WORKLOAD_MODE=no_store \
+KV_WORKLOAD_REPLAY_SCALE=10 \
 KV_WORKLOAD_RESULT_DIR=results/public-trace/conversation \
   ./run.sh kv-workload-replay
 KV_WORKLOAD_MODE=direct KV_WORKLOAD_TARGET=remote_nof \
 KV_WORKLOAD_CASE_ID=direct-remote \
+KV_WORKLOAD_REPLAY_SCALE=10 \
 KV_WORKLOAD_RESULT_DIR=results/public-trace/conversation \
   ./run.sh kv-workload-replay
 ```
 
 The adapter requires exactly the requested number of valid input rows and is
-sequential: timestamps preserve deterministic event order but do not drive
-arrival timing or concurrency. The fixed block size is a page-size model, not
-a reconstruction of the trace's original byte volume. Direct and transparent
-placement are selected during replay; the converted trace keeps
+sequential. By default, it assigns synthetic one-microsecond event timestamps,
+which preserves deterministic event order and the digests used by existing
+experiments. `--preserve-arrivals` instead converts the FAST'25 millisecond
+timestamps to microseconds while retaining same-request arrival batches.
+Setting `KV_WORKLOAD_REPLAY_SCALE` to a positive fast-forward multiplier makes
+replay wait for those offsets (`10` replays a 100-second source span in 10
+seconds); `0`, the default, disables pacing. Raw and summarized results record
+the scheduled span, processing wall time, completion lag, and request arrival
+lag.
+
+Arrival pacing does not introduce workers or overlap Store operations: every
+event still completes before the next event starts, and late events run
+immediately while their lag is recorded. Results therefore describe a
+sequential, arrival-paced replay and must not be presented as concurrent-load
+or throughput-saturation evidence. The fixed block size is a page-size model,
+not a reconstruction of the trace's original byte volume. Direct and
+transparent placement are selected during replay; the converted trace keeps
 `policy=round_robin` so one digest can be used for matched local and remote
 cases. If a page is evicted and later produced again, replay assigns a new
 generation-suffixed Store key so delayed backend cleanup cannot collide with

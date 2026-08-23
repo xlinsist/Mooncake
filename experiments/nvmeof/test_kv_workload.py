@@ -72,6 +72,17 @@ class FakeStore:
         self.closed = True
 
 
+class ManualClock:
+    def __init__(self):
+        self.now_ns = 0
+
+    def clock_ns(self):
+        return self.now_ns
+
+    def sleep(self, seconds):
+        self.now_ns += round(seconds * 1_000_000_000)
+
+
 def descriptor(_store, _key, expected_target):
     return {"target": expected_target or "remote_nof", "object_size": 4096}
 
@@ -100,6 +111,53 @@ def test_no_store_replay_uses_fixed_proxy_without_connecting():
         "noop",
     ]
     assert all(operation["descriptor"] is None for operation in result["operations"])
+
+
+def test_paced_no_store_replay_records_schedule_and_completion_lag():
+    events = [
+        TraceEvent(0, "request-1", "prefix", "block", 4096, "produce", "local_only"),
+        TraceEvent(3000, "request-2", "prefix", "block", 4096, "reuse", "local_only"),
+        TraceEvent(3000, "cleanup", "prefix", "block", 4096, "evict", "local_only"),
+    ]
+    clock = ManualClock()
+
+    result = replay_trace(
+        events,
+        mode="no_store",
+        recompute_us=1000,
+        replay_scale=1,
+        clock_ns=clock.clock_ns,
+        sleeper=clock.sleep,
+    )
+
+    assert result["status"] == "pass"
+    assert result["pacing"] == {
+        "enabled": True,
+        "replay_scale": 1,
+        "source_timestamp_unit": "microseconds",
+        "scheduled_span_us": 3000.0,
+        "processing_wall_us": 4000.0,
+        "completion_lag_us": 1000.0,
+        "schedule_sleep_us": 2000.0,
+        "modeled_work_sleep_us": 2000.0,
+        "max_arrival_lag_us": 1000.0,
+    }
+    assert [operation["scheduled_offset_us"] for operation in result["operations"]] == [
+        0.0,
+        3000.0,
+        3000.0,
+    ]
+    assert [operation["arrival_lag_us"] for operation in result["operations"]] == [
+        0.0,
+        0.0,
+        1000.0,
+    ]
+
+
+@pytest.mark.parametrize("replay_scale", [-1, float("nan"), float("inf")])
+def test_replay_rejects_invalid_replay_scale(replay_scale):
+    with pytest.raises(ValueError, match="replay_scale"):
+        replay_trace(replay_events(), mode="no_store", replay_scale=replay_scale)
 
 
 def test_transparent_replay_records_and_revalidates_actual_descriptor():
@@ -249,10 +307,40 @@ def test_offline_summary_writes_layout_and_metrics(tmp_path):
     assert conclusion["cases"][0]["request_hit_rate"] == 0.5
     assert conclusion["cases"][0]["block_hit_rate"] == 0.5
     assert conclusion["cases"][0]["storage_wait_us"] == 60.0
+    assert conclusion["cases"][0]["replay_scale"] == 0
+    assert conclusion["cases"][0]["request_arrival_lag_p50_us"] is None
     assert (tmp_path / "operations.csv").exists()
     assert (tmp_path / "summary.csv").exists()
     assert b"\r\n" not in (tmp_path / "operations.csv").read_bytes()
     assert b"\r\n" not in (tmp_path / "summary.csv").read_bytes()
+
+
+def test_offline_summary_records_pacing_metrics(tmp_path):
+    events = [
+        TraceEvent(0, "request-1", "prefix", "block", 4096, "produce", "local_only"),
+        TraceEvent(3000, "request-2", "prefix", "block", 4096, "reuse", "local_only"),
+        TraceEvent(3000, "cleanup", "prefix", "block", 4096, "evict", "local_only"),
+    ]
+    clock = ManualClock()
+    result = replay_trace(
+        events,
+        mode="no_store",
+        replay_scale=1,
+        clock_ns=clock.clock_ns,
+        sleeper=clock.sleep,
+    )
+    result.update({"case_id": "paced", "run_id": "run-1", "trace_sha256": "trace-1"})
+    (tmp_path / "raw-paced.json").write_text(json.dumps(result))
+
+    conclusion = summarize_results(tmp_path, required_cases=["paced"])
+
+    case = conclusion["cases"][0]
+    assert case["replay_scale"] == 1
+    assert case["scheduled_span_us"] == 3000.0
+    assert case["processing_wall_us"] == 4000.0
+    assert case["completion_lag_us"] == 1000.0
+    assert case["request_arrival_lag_p50_us"] == 0.0
+    assert case["request_arrival_lag_p95_us"] == 0.0
 
 
 def test_offline_summary_rejects_missing_failed_and_mixed_runs(tmp_path):
@@ -318,6 +406,7 @@ def test_replay_command_isolates_keys_by_run_and_case(tmp_path, monkeypatch):
             case_id=case_id,
             run_id=None,
             recompute_us=1_000,
+            replay_scale=0.0,
         )
         assert kv_workload._replay_command(args) == 0
 

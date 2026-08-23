@@ -68,7 +68,8 @@ kv_workload_replay() {
   [[ -f "$trace" ]] || die "KV workload trace is missing: $trace"
   mkdir -p "$out"
   local args=("$(dirname "$0")/kv_workload.py" replay "$trace" "$out/raw-$case_id.json"
-    --mode "$mode" --case-id "$case_id" --recompute-us "${KV_WORKLOAD_RECOMPUTE_US:-1000}")
+    --mode "$mode" --case-id "$case_id" --recompute-us "${KV_WORKLOAD_RECOMPUTE_US:-1000}"
+    --replay-scale "${KV_WORKLOAD_REPLAY_SCALE:-0}")
   [[ -f "$manifest" ]] && args+=(--manifest "$manifest")
   [[ -n $target ]] && args+=(--target "$target")
   [[ -n $run_id ]] && args+=(--run-id "$run_id")
