@@ -160,3 +160,21 @@ validity/failure evidence。
 `+1.74% / +1.67%`，put p50 为 `+1.77%`。该结果只用于 load-valid paired
 overhead，不把原始无 gate stress epoch 改写为有效。详见
 [`14-kv-cache-gated-remote-stress-results.md`](14-kv-cache-gated-remote-stress-results.md)。
+
+## 公开 Trace 规模补充
+
+补充批次 `20260823T194510Z-public-trace-scale` 把 FAST'25 durable replay 扩展到
+conversation/toolagent × 20/50/100 request × local/remote × 3 repeats，共
+36/36 个 case。所有 case 退出为 0，44,394 次 write 的 sync count 全部匹配；
+target subsystem、bdev、service 状态和 PID 在临时 8 GiB AIO subsystem 回收后
+逐字节恢复。
+
+remote whole-path QPS 为 local 的 `1.79--2.30x`，write p50 为
+`0.45--0.50x`，read p50 为 `0.94--1.03x`。toolagent hit rate 从
+`12.65%` 增至 `24.27%` 时，request p50 路径比值从 `0.479x` 收窄到
+`0.814x`，说明更多 read/reuse 会稀释持久 write 路径差异。
+
+该结果仍是不同设备、文件系统和 I/O stack 的 GPU-free whole-path comparison，
+不用于 NVMe-oF transport、Store direct/transparent、true concurrency 或 serving
+主张。完整分布、raw evidence 和边界见
+[`16-public-trace-scale-results.md`](16-public-trace-scale-results.md)。

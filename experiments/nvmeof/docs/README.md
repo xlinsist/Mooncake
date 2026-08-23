@@ -47,3 +47,6 @@ verified transparent heterogeneous-storage deployment.
     records sequential client-to-Master fault detection and recovery, safe
     non-publication, the post-client-close failed-put residue, and exact
     hardware restoration evidence.
+16. [`16-public-trace-scale-results.md`](16-public-trace-scale-results.md)
+    records the durable conversation/toolagent 20/50/100-request scale matrix,
+    whole-path distributions, strict sync counts, and exact target restoration.

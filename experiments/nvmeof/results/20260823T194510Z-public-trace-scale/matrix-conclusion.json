@@ -1,0 +1,15 @@
+{
+  "status": "pass",
+  "planned_cases": 36,
+  "observed_cases": 36,
+  "complete_matrix": true,
+  "all_exit_zero": true,
+  "all_sync_counts_match_writes": true,
+  "total_writes": 44394,
+  "total_reads": 5544,
+  "approximate_payload_bytes": 2808008146944,
+  "target_subsystems_restored": true,
+  "target_bdevs_restored": true,
+  "target_service_restored": true,
+  "errors": []
+}

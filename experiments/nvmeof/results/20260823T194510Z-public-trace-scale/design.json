@@ -1,0 +1,14 @@
+{
+  "run_id": "20260823T194510Z",
+  "scenarios": ["conversation", "toolagent"],
+  "request_scales": [20, 50, 100],
+  "paths": ["local_nvme_ext4", "file_backed_nvmeof_xfs"],
+  "repetitions": 3,
+  "model": "glm5",
+  "page_size_tokens": 512,
+  "max_pages": 64,
+  "fsync_mode": "always",
+  "threads": 1,
+  "replay_scale": 0,
+  "claim_boundary": "GPU-free durable storage-path scale evidence; different devices/filesystems, sequential single-thread replay, modulo page mapping, no transport-only, serving, true-concurrency, or system-superiority claim."
+}
