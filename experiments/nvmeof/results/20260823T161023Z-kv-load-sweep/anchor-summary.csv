@@ -1,0 +1,9 @@
+target,position,case_id,mode,operations,p50_latency_us,p95_latency_us,p99_latency_us,operation_rate,produce,reuse,evict,miss,request_count,request_hit_rate,block_hit_rate,miss_rate,request_p50_latency_us,request_p95_latency_us,storage_wait_us,cpu_utilization_pct,local,remote
+local_nvme,pre,direct-local,direct,148,516.71,960.86,1698.29,1572.381602,52,44,52,0,24,0.458333,0.458333,0.0,3238.051,4825.401,94124.734,,148,0
+local_nvme,pre,transparent-local,transparent,148,551.08,1165.36,6772.743,1465.151989,52,44,52,0,24,0.458333,0.458333,0.0,3462.172,5242.022,101013.411,,148,0
+local_nvme,post,direct-local,direct,148,520.88,1033.351,6951.563,1459.547723,52,44,52,0,24,0.458333,0.458333,0.0,3290.351,4913.042,101401.275,,148,0
+local_nvme,post,transparent-local,transparent,148,551.85,1167.65,12492.306,1396.836556,52,44,52,0,24,0.458333,0.458333,0.0,3421.272,5274.721,105953.699,,148,0
+remote_nof,pre,direct-remote,direct,148,160.25,247.87,313.87,2802.790526,52,44,52,0,24,0.458333,0.458333,0.0,916.001,960.73,52804.517,,0,148
+remote_nof,pre,transparent-remote,transparent,148,157.62,285.69,419.651,2198.823603,52,44,52,0,24,0.458333,0.458333,0.0,1044.15,1134.349,67308.719,,0,148
+remote_nof,post,direct-remote,direct,148,161.12,246.01,341.41,2397.393618,52,44,52,0,24,0.458333,0.458333,0.0,903.519,941.651,61733.709,,0,148
+remote_nof,post,transparent-remote,transparent,148,161.48,285.81,400.989,2675.720775,52,44,52,0,24,0.458333,0.458333,0.0,1036.09,1086.781,55312.199,,0,148

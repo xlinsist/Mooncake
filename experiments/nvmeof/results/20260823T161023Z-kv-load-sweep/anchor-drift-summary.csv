@@ -1,0 +1,17 @@
+target,mode,metric,pre,post,drift_pct
+local_nvme,direct,p50_latency_us,516.71,520.88,0.807029
+local_nvme,direct,p95_latency_us,960.86,1033.351,7.544387
+local_nvme,direct,request_p50_latency_us,3238.051,3290.351,1.615169
+local_nvme,direct,request_p95_latency_us,4825.401,4913.042,1.816243
+local_nvme,transparent,p50_latency_us,551.08,551.85,0.139726
+local_nvme,transparent,p95_latency_us,1165.36,1167.65,0.196506
+local_nvme,transparent,request_p50_latency_us,3462.172,3421.272,-1.181339
+local_nvme,transparent,request_p95_latency_us,5242.022,5274.721,0.623786
+remote_nof,direct,p50_latency_us,160.25,161.12,0.542902
+remote_nof,direct,p95_latency_us,247.87,246.01,-0.750393
+remote_nof,direct,request_p50_latency_us,916.001,903.519,-1.362662
+remote_nof,direct,request_p95_latency_us,960.73,941.651,-1.985886
+remote_nof,transparent,p50_latency_us,157.62,161.48,2.448928
+remote_nof,transparent,p95_latency_us,285.69,285.81,0.042004
+remote_nof,transparent,request_p50_latency_us,1044.15,1036.09,-0.77192
+remote_nof,transparent,request_p95_latency_us,1134.349,1086.781,-4.193418

@@ -1,0 +1,22 @@
+{
+  "anchor_case_rows": 8,
+  "case_rows": 80,
+  "cell_count": 16,
+  "expected_case_rows": 80,
+  "failures": [
+    "load remote/remote_stress/2: remote load drift iops=7.23 reference=6976.25",
+    "load remote/remote_stress/4: remote load drift iops=7.03 reference=6976.25"
+  ],
+  "load_epochs": 32,
+  "scenario_status": {
+    "idle": "pass",
+    "local50": "pass",
+    "local90": "pass",
+    "remote_stress": "inconclusive"
+  },
+  "status": "inconclusive",
+  "telemetry_case_rows": 88,
+  "trace_digests": [
+    "3a49f1f79b9fdd5df28ad41190dfb5839524ef397052bae178b7f4e9b9d47051"
+  ]
+}

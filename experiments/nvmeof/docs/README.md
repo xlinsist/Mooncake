@@ -37,3 +37,6 @@ verified transparent heterogeneous-storage deployment.
 12. [`12-kv-cache-reuse-sweep-results.md`](12-kv-cache-reuse-sweep-results.md)
     records the repeated 0--90% reuse sweep, request-latency sensitivity,
     paired transparent overhead, and final round-robin recovery evidence.
+13. [`13-kv-cache-background-load-results.md`](13-kv-cache-background-load-results.md)
+    records the counterbalanced idle/local-load/remote-stress sweep, achieved
+    load gates, per-case telemetry, remote-stress instability, and recovery.

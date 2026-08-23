@@ -132,3 +132,24 @@ get-dominated request p50 overhead 降到约 0%，但 request p95 仍为 `+13.93
 
 完整结论、分布和恢复证据见
 [`12-kv-cache-reuse-sweep-results.md`](12-kv-cache-reuse-sweep-results.md)。
+
+## 背景负载补充 Sweep
+
+补充批次 `20260823T161023Z-kv-load-sweep` 固定 128 KiB、50% reuse，完成
+4 scenarios × 4 counterbalanced trials × 5 cases，共 80 个主 case；另有 8 个
+policy phase idle anchor。88/88 个 foreground case 均为 0 miss、descriptor
+正确并有完整 system/process/RDMA/SPDK/SMART telemetry。
+
+local50/local90 的 achieved rate 分别稳定在约 `81,869 / 147,364 IOPS`，对应
+foreground block utilization 中位数约 94%/99%。在 `idle/local50/local90`
+三个 load-valid scenario 中，remote put p50 transparent overhead 为
+`+14.49% / +14.20% / +13.85%`，get/remove p50 接近 direct。
+
+`remote_stress` 被 fail-closed 标为 `inconclusive`：六个含 recovery 的 epoch
+中三个维持约 `6,975 IOPS`，三个降到约 `7 IOPS`，均报告 0 failed operation。
+同一 transparent-first 顺序和 15 秒 cooldown 也分别产生一次 healthy、一次
+collapsed 结果，因此不能计算稳定的 stress overhead；该现象保留为 load
+validity/failure evidence。
+
+完整结论见
+[`13-kv-cache-background-load-results.md`](13-kv-cache-background-load-results.md)。

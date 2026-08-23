@@ -1,0 +1,13 @@
+{
+  "status_policy": "fail_closed_to_inconclusive",
+  "workload": {"requests": 24, "blocks_per_request": 4, "block_size": 131072, "reuse_ratio": 0.5, "configured_concurrency": 1, "seed": 42},
+  "scenarios": ["idle", "local50", "local90", "remote_stress"],
+  "scenario_orders": {
+    "1": ["idle", "local50", "local90", "remote_stress"],
+    "2": ["local50", "remote_stress", "idle", "local90"],
+    "3": ["local90", "idle", "remote_stress", "local50"],
+    "4": ["remote_stress", "local90", "local50", "idle"]
+  },
+  "mode_orders": {"1": "direct_then_transparent", "2": "transparent_then_direct", "3": "direct_then_transparent", "4": "transparent_then_direct"},
+  "claim_boundary": "Fixed 128 KiB, 50% configured reuse, sequential configured concurrency 1, single-client synthetic replay; no serving, TTFT, exact utilization, transport-only, adaptive-policy, generalized-crossover, isolation, or true-concurrency claim."
+}

@@ -1,0 +1,50 @@
+{
+  "failures": [],
+  "interpretation": "The same transparent-first order and 15-second cooldown produced one healthy and one collapsed remote offered-load epoch; the stress point is nondeterministic and is excluded from overhead claims.",
+  "reference_iops": 6976.25,
+  "status": "reproduced_instability",
+  "trials": [
+    {
+      "completed_ops": 543,
+      "cooldown_sec": 15,
+      "failed_ops": 0,
+      "foreground": {
+        "direct": {
+          "request_p50_latency_us": 932.031,
+          "request_p95_latency_us": 993.362
+        },
+        "transparent": {
+          "request_p50_latency_us": 1090.44,
+          "request_p95_latency_us": 1136.249
+        }
+      },
+      "load_bw_reported": 7.24,
+      "load_classification": "collapsed",
+      "load_iops": 7.24,
+      "load_to_calibration_ratio": 0.0010378068446514962,
+      "mode_order": "transparent_then_direct",
+      "trial": 2
+    },
+    {
+      "completed_ops": 523119,
+      "cooldown_sec": 15,
+      "failed_ops": 0,
+      "foreground": {
+        "direct": {
+          "request_p50_latency_us": 9986.854,
+          "request_p95_latency_us": 10140.295
+        },
+        "transparent": {
+          "request_p50_latency_us": 10150.435,
+          "request_p95_latency_us": 10306.555
+        }
+      },
+      "load_bw_reported": 6.81,
+      "load_classification": "healthy",
+      "load_iops": 6974.92,
+      "load_to_calibration_ratio": 0.9998093531625157,
+      "mode_order": "transparent_then_direct",
+      "trial": 4
+    }
+  ]
+}
