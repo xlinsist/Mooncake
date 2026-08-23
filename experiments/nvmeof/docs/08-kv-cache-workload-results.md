@@ -96,3 +96,23 @@ NVMe-oF transport overhead 或系统优劣结论。完整指标和 raw evidence 
 [`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)；
 透明层八证据契约见
 [`../../../docs/transparent-layer-phase4-acceptance-plan.md`](../../../docs/transparent-layer-phase4-acceptance-plan.md)。
+
+## 对象大小补充 Sweep
+
+补充批次 `20260823T151851Z-kv-size-sweep` 已完成 16/64/128/256 KiB、
+每个大小三次重复的两节点 matched matrix。每个 trial 包含 `no_store`、
+direct/transparent local 和 direct/transparent remote；60/60 个 case 通过，
+每个 case 148 次操作、0 miss，local/remote descriptor 全部与目标一致。
+
+remote transparent-minus-direct put p50 paired delta 的三次中位数依次为
+`+17.36% / +19.78% / +17.24% / +13.99%`，对应 request p50 为
+`+15.32% / +17.10% / +15.27% / +12.28%`。remote get/remove p50 接近
+direct。local p50 差异较小且没有一致方向，local p95/p99 受孤立 outlier
+影响，不能据此声称 tail 改善或回归。
+
+该批次还定位并修复了一个环境问题：普通用户 Master 的 NoF heartbeat SPDK
+probe 因 IOVA PA 权限失败，连续失败后卸载 segment，表面报错为
+`insufficient space`；root Master 保持 heartbeat 和 64 GiB capacity active，
+完成剩余 matrix 及 6 local + 6 remote 的 round-robin recovery smoke。
+完整结论和原始证据见
+[`11-kv-cache-size-sweep-results.md`](11-kv-cache-size-sweep-results.md)。

@@ -1,0 +1,23 @@
+{
+  "case_rows": 60,
+  "cell_count": 12,
+  "expected_case_rows": 60,
+  "failed_cells": [],
+  "preserved_failure": "raw-failures/size65536-trial3-transparent-remote-attempt1.json",
+  "root_heartbeat_validation": "inventory/root-heartbeat-validation.txt",
+  "status": "pass",
+  "trace_digests_by_size": {
+    "131072": [
+      "3a49f1f79b9fdd5df28ad41190dfb5839524ef397052bae178b7f4e9b9d47051"
+    ],
+    "16384": [
+      "654662898f16ff9d2632f86b013bf9e989212be499cefd7ae36e8d4eb9909235"
+    ],
+    "262144": [
+      "538e8ccae268710f3c4cf4acc147babc21d42ca4156ce4f5aba8efeddf8bf3ae"
+    ],
+    "65536": [
+      "6bd712e2622fdb0c19e0a55b79b44f7ce2f9595686399ca05782b4b98bf37cd6"
+    ]
+  }
+}

@@ -31,3 +31,6 @@ verified transparent heterogeneous-storage deployment.
 10. [`10-public-trace-storage-baseline.md`](10-public-trace-storage-baseline.md)
     records the matched durable FAST'25 public-trace storage-path smoke, its
     raw evidence, and the boundary between whole-path and transport claims.
+11. [`11-kv-cache-size-sweep-results.md`](11-kv-cache-size-sweep-results.md)
+    records the repeated 16--256 KiB two-node size sweep, paired transparent
+    overhead, descriptor invariants, and the root-Master heartbeat fix.
