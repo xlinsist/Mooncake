@@ -1,7 +1,9 @@
 import json
+from argparse import Namespace
 
 import pytest
 
+import kv_workload
 from kv_workload import (
     TraceEvent,
     generate_trace,
@@ -240,3 +242,34 @@ def test_replay_modes_have_common_result_schema():
     no_store = replay_trace(replay_events(), mode="no_store")
     assert {"schema_version", "status", "mode", "operations", "errors"} <= no_store.keys()
     assert no_store["mode"] == "no_store"
+
+
+def test_replay_command_isolates_keys_by_run_and_case(tmp_path, monkeypatch):
+    trace = tmp_path / "trace.jsonl"
+    write_trace(trace, replay_events())
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"run_id": "run-1", "trace_sha256": "digest"}))
+    prefixes = []
+
+    def fake_replay(_events, **kwargs):
+        prefixes.append(kwargs["key_prefix"])
+        return {"status": "pass", "errors": [], "operations": []}
+
+    monkeypatch.setattr(kv_workload, "replay_trace", fake_replay)
+    for case_id in ("direct-local", "transparent-local"):
+        args = Namespace(
+            output=tmp_path / f"raw-{case_id}.json",
+            trace=trace,
+            manifest=manifest,
+            mode="transparent",
+            target="local_nvme",
+            case_id=case_id,
+            run_id=None,
+            recompute_us=1_000,
+        )
+        assert kv_workload._replay_command(args) == 0
+
+    assert prefixes == [
+        "kv-workload-run-1-direct-local",
+        "kv-workload-run-1-transparent-local",
+    ]

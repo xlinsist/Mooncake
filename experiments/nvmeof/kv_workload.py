@@ -622,9 +622,17 @@ def _generate_command(args: argparse.Namespace) -> int:
 def _replay_command(args: argparse.Namespace) -> int:
     output = Path(args.output)
     events = read_trace(args.trace)
-    result = replay_trace(events, mode=args.mode, target=args.target, recompute_us=args.recompute_us)
     manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else {}
-    result.update({"case_id": args.case_id, "run_id": args.run_id or manifest.get("run_id"), "trace_sha256": manifest.get("trace_sha256")})
+    run_id = args.run_id or manifest.get("run_id")
+    key_prefix = f"kv-workload-{run_id or 'unscoped'}-{args.case_id}"
+    result = replay_trace(
+        events,
+        mode=args.mode,
+        target=args.target,
+        key_prefix=key_prefix,
+        recompute_us=args.recompute_us,
+    )
+    result.update({"case_id": args.case_id, "run_id": run_id, "trace_sha256": manifest.get("trace_sha256")})
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0 if result["status"] == "pass" else 1
