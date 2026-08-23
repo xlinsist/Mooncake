@@ -68,3 +68,6 @@ verified transparent heterogeneous-storage deployment.
 22. [`22-public-trace-store-r1000-pacing-results.md`](22-public-trace-store-r1000-pacing-results.md)
     extends 10x sequential pacing to 1000 requests, compares prefix composition
     and schedule debt against 500 requests, and records paired Store overhead.
+23. [`23-public-trace-durable-pacing-results.md`](23-public-trace-durable-pacing-results.md)
+    adds real-time durable whole-path arrival debt for local ext4 and temporary
+    file-backed NVMe-oF XFS, with exact target restoration evidence.

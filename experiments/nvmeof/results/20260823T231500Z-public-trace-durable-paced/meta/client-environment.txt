@@ -1,0 +1,28 @@
+2026-08-23T23:11:49Z
+smicro-amd-two-numa
+uid=1007(zhouxulin) gid=1007(zhouxulin) groups=1007(zhouxulin)
+Linux smicro-amd-two-numa 6.8.0-136-generic #136-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul  1 21:53:05 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+SOURCE_COMMIT=d885387ed127f8c4b23587fc9455983df2646cad
+aad042cfc9d55c390235296c6bb0556eb083fd3856939ea6200bd9c9831d8ddc  /sharenvme/userhome/zhouxulin/mooncake-public-trace-benchmark-runs/20260823T231500Z/storage_benchmark_v1/benchmark.py
+b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df  /sharenvme/userhome/zhouxulin/mooncake-kv-e82f0bb7/FAST25-release/traces/conversation_trace.jsonl
+48a2db1a13d3bc05e6330140c64f604ba366df20d3c9e128b5c35a01c1fa5f71  /sharenvme/userhome/zhouxulin/mooncake-kv-e82f0bb7/FAST25-release/traces/toolagent_trace.jsonl
+  12031 /sharenvme/userhome/zhouxulin/mooncake-kv-e82f0bb7/FAST25-release/traces/conversation_trace.jsonl
+  23608 /sharenvme/userhome/zhouxulin/mooncake-kv-e82f0bb7/FAST25-release/traces/toolagent_trace.jsonl
+  35639 total
+/dev/nvme1n1 ext4 rw,relatime /mnt/datassd
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme1n1    3.5T  3.0T  301G  91% /mnt/datassd
+RUN_ID=20260823T231500Z
+TARGET_NQN=nqn.2026-08.local.mooncake:trace-paced-20260823T231500Z
+OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1
+MKL_NUM_THREADS=1
+NUMEXPR_NUM_THREADS=1
+VECLIB_MAXIMUM_THREADS=1
+TORCH_NUM_THREADS=1
+model=glm5
+page_size_tokens=512
+max_pages=64
+fsync_mode=always
+threads=1
+replay_scales=1
