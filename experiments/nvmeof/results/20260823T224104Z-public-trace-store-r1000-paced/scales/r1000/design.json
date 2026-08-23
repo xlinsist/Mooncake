@@ -1,0 +1,14 @@
+{
+  "run_id": "20260823T224104Z",
+  "scenarios": ["conversation", "toolagent"],
+  "requests": 1000,
+  "capacity_pages": 64,
+  "block_size": 131072,
+  "replay_scale": 10,
+  "preserve_arrivals": true,
+  "trials": 3,
+  "cases_per_trial": ["no_store", "direct-local", "transparent-local", "direct-remote", "transparent-remote"],
+  "planned_cases": 30,
+  "timeouts_seconds": {"case": 600, "kill_grace": 30},
+  "claim_boundary": "Sequential FAST'25 hash-id replay with compressed source arrival pacing through Mooncake Store; no true concurrency, model serving, transport-only, saturation, or system-superiority claim."
+}

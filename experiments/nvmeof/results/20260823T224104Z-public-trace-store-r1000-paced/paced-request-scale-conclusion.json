@@ -1,0 +1,27 @@
+{
+  "all_final_recovery_passed": true,
+  "capacity_pages": 64,
+  "claim_boundary": "Bounded 500/1000-request sequential arrival-paced replay; not a full trace, request-concurrency, saturation-throughput, or serving claim.",
+  "client_inventory_equal_for_1000": true,
+  "errors": [],
+  "observed_cases": 60,
+  "planned_cases": 60,
+  "replay_scale": 10,
+  "request_counts": [
+    500,
+    1000
+  ],
+  "source_digests": {
+    "conversation": [
+      "b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df"
+    ],
+    "toolagent": [
+      "48a2db1a13d3bc05e6330140c64f604ba366df20d3c9e128b5c35a01c1fa5f71"
+    ]
+  },
+  "status": "pass",
+  "store_gets": 90984,
+  "store_payload_bytes_put_plus_get": 111569534976,
+  "store_puts": 760224,
+  "store_removes": 760224
+}

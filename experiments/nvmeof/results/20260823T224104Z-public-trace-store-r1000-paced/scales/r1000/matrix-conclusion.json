@@ -1,0 +1,38 @@
+{
+  "cell_conclusions": 6,
+  "cell_errors": [],
+  "client_master_final_policy": "round_robin",
+  "client_master_initial_policy": "round_robin",
+  "errors": [],
+  "final_recovery_errors": [],
+  "final_recovery_status": "pass",
+  "nonzero_case_rcs": [],
+  "observed_cases": 30,
+  "observed_replay_scales": [
+    10.0
+  ],
+  "pacing_errors": [],
+  "planned_cases": 30,
+  "replay_scale": 10,
+  "source_digests": {
+    "conversation": [
+      "b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df"
+    ],
+    "toolagent": [
+      "48a2db1a13d3bc05e6330140c64f604ba366df20d3c9e128b5c35a01c1fa5f71"
+    ]
+  },
+  "status": "pass",
+  "store_gets": 60660,
+  "store_payload_bytes_put_plus_get": 73935618048,
+  "store_puts": 503424,
+  "store_removes": 503424,
+  "trace_digests": {
+    "conversation": [
+      "56a565965a695e740004b4f5f55c64109eaf94b5357282cbcd08f593aefe575d"
+    ],
+    "toolagent": [
+      "0fd8025e5c3e279e3da423002d96bc813715a8f0d521861a275f6495fc6a3854"
+    ]
+  }
+}

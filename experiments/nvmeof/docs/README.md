@@ -65,3 +65,6 @@ verified transparent heterogeneous-storage deployment.
 21. [`21-public-trace-store-pacing-scale-results.md`](21-public-trace-store-pacing-scale-results.md)
     extends sequential arrival pressure to 5x/10x/20x, identifies schedule-debt
     boundaries, and preserves the distinction from true concurrency.
+22. [`22-public-trace-store-r1000-pacing-results.md`](22-public-trace-store-r1000-pacing-results.md)
+    extends 10x sequential pacing to 1000 requests, compares prefix composition
+    and schedule debt against 500 requests, and records paired Store overhead.
