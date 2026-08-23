@@ -1,0 +1,17 @@
+nvme-subsys2 - NQN=nqn.2026-08.local.mooncake:nof-phase1
+               hostnqn=nqn.2014-08.org.nvmexpress:uuid:af0caa00-9faf-11ee-8000-7cc2555fba89
+               iopolicy=numa
+\
+ +- nvme2 rdma traddr=10.0.0.5,trsvcid=4420 live
+
+nvme-subsys1 - NQN=nqn.2016-08.com.micron:nvme:nvm-subsystem-sn-22083552A124
+               hostnqn=nqn.2014-08.org.nvmexpress:uuid:af0caa00-9faf-11ee-8000-7cc2555fba89
+               iopolicy=numa
+\
+ +- nvme1 pcie 0000:25:00.0 live
+
+nvme-subsys0 - NQN=nqn.2016-08.com.micron:nvme:nvm-subsystem-sn-22063553DD33
+               hostnqn=nqn.2014-08.org.nvmexpress:uuid:af0caa00-9faf-11ee-8000-7cc2555fba89
+               iopolicy=numa
+\
+ +- nvme0 pcie 0000:24:00.0 live

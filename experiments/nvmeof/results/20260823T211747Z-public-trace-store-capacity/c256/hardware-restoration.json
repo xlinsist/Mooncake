@@ -1,0 +1,18 @@
+{
+  "client_master_final_transition": "2026-08-23T21:21:51Z 925795 root round_robin",
+  "client_master_initial_policy": "round_robin",
+  "client_subsystems_exact_match": true,
+  "errors": [],
+  "status": "pass",
+  "target_bdev_names": [
+    "Nvme0n1"
+  ],
+  "target_bdevs_exact_match": true,
+  "target_service_exact_match": true,
+  "target_service_main_pid": 2072748,
+  "target_subsystem_nqns": [
+    "nqn.2014-08.org.nvmexpress.discovery",
+    "nqn.2026-08.local.mooncake:nof-phase1"
+  ],
+  "target_subsystems_exact_match": true
+}

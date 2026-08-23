@@ -1,0 +1,38 @@
+[
+  {
+    "nqn": "nqn.2014-08.org.nvmexpress.discovery",
+    "subtype": "Discovery",
+    "listen_addresses": [],
+    "allow_any_host": true,
+    "hosts": []
+  },
+  {
+    "nqn": "nqn.2026-08.local.mooncake:nof-phase1",
+    "subtype": "NVMe",
+    "listen_addresses": [
+      {
+        "transport": "RDMA",
+        "trtype": "RDMA",
+        "adrfam": "IPv4",
+        "traddr": "10.0.0.5",
+        "trsvcid": "4420"
+      }
+    ],
+    "allow_any_host": true,
+    "hosts": [],
+    "serial_number": "MOONCAKE01",
+    "model_number": "Mooncake NVMe-oF validation",
+    "max_namespaces": 32,
+    "min_cntlid": 1,
+    "max_cntlid": 65519,
+    "namespaces": [
+      {
+        "nsid": 1,
+        "bdev_name": "Nvme0n1",
+        "name": "Nvme0n1",
+        "nguid": "01000000000000005CD2E4CB8B765351",
+        "uuid": "01000000-0000-0000-5cd2-e4cb8b765351"
+      }
+    ]
+  }
+]

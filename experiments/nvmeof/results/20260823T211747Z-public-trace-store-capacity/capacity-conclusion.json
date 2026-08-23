@@ -1,0 +1,25 @@
+{
+  "capacity_pages": [
+    16,
+    64,
+    256
+  ],
+  "errors": [],
+  "hardware_status": {
+    "16": "pass",
+    "256": "pass",
+    "64": "pass"
+  },
+  "matrix_status": {
+    "16": "pass",
+    "256": "pass",
+    "64": "pass"
+  },
+  "observed_cases": 90,
+  "planned_cases": 90,
+  "status": "pass",
+  "store_gets": 83316,
+  "store_payload_bytes_put_plus_get": 112901750784,
+  "store_puts": 778056,
+  "store_removes": 778056
+}

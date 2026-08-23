@@ -56,3 +56,6 @@ verified transparent heterogeneous-storage deployment.
 18. [`18-public-trace-store-scale-results.md`](18-public-trace-store-scale-results.md)
     extends the matched Store replay to 500 requests per public trace and
     records trial ranges, 100/500 scaling, and exact hardware restoration.
+19. [`19-public-trace-store-capacity-results.md`](19-public-trace-store-capacity-results.md)
+    records 16/64/256-page public-trace Store sensitivity, hit-rate changes,
+    paired overhead distributions, and unified restoration gates.

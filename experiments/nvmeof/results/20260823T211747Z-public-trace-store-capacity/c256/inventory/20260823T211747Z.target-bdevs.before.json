@@ -1,0 +1,68 @@
+[
+  {
+    "name": "Nvme0n1",
+    "aliases": [
+      "01000000-0000-0000-5cd2-e4cb8b765351"
+    ],
+    "product_name": "NVMe disk",
+    "block_size": 512,
+    "num_blocks": 781422768,
+    "uuid": "01000000-0000-0000-5cd2-e4cb8b765351",
+    "assigned_rate_limits": {
+      "rw_ios_per_sec": 0,
+      "rw_mbytes_per_sec": 0,
+      "r_mbytes_per_sec": 0,
+      "w_mbytes_per_sec": 0
+    },
+    "claimed": true,
+    "zoned": false,
+    "supported_io_types": {
+      "read": true,
+      "write": true,
+      "unmap": true,
+      "write_zeroes": true,
+      "flush": true,
+      "reset": true,
+      "compare": false,
+      "compare_and_write": false,
+      "abort": true,
+      "nvme_admin": true,
+      "nvme_io": true
+    },
+    "driver_specific": {
+      "nvme": [
+        {
+          "pci_address": "0000:75:00.0",
+          "trid": {
+            "trtype": "PCIe",
+            "traddr": "0000:75:00.0"
+          },
+          "ctrlr_data": {
+            "cntlid": 0,
+            "vendor_id": "0x8086",
+            "model_number": "INTEL SSDPF21Q400GB",
+            "serial_number": "PHAL13400005400AGN",
+            "firmware_revision": "L0310200",
+            "subnqn": "nqn.2021-08.com.intel:PHAL13400005400AGN  ",
+            "oacs": {
+              "security": 0,
+              "format": 1,
+              "firmware": 1,
+              "ns_manage": 1
+            },
+            "multi_ctrlr": false,
+            "ana_reporting": false
+          },
+          "vs": {
+            "nvme_version": "1.3"
+          },
+          "ns_data": {
+            "id": 1,
+            "can_share": false
+          }
+        }
+      ],
+      "mp_policy": "active_passive"
+    }
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "block_size": 131072,
+  "capacity_pages": [16, 64, 256],
+  "cases_per_trial": [
+    "no_store",
+    "direct-local",
+    "transparent-local",
+    "direct-remote",
+    "transparent-remote"
+  ],
+  "claim_boundary": "Sequential FAST'25 hash-id Store replay; no arrival timing, true concurrency, model serving, adaptive placement, or system-superiority claim.",
+  "requests": 500,
+  "scenarios": ["conversation", "toolagent"],
+  "source_runs": {
+    "16": "20260823T210840Z-public-trace-store-r500-c16",
+    "64": "20260823T205337Z-public-trace-store-r500",
+    "256": "20260823T211747Z-public-trace-store-r500-c256"
+  },
+  "trials_per_capacity": 3
+}
