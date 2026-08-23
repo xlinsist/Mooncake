@@ -28,3 +28,6 @@ verified transparent heterogeneous-storage deployment.
    and remote transparent-overhead distribution analysis.
 9. [`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)
    is the portable next-step execution plan for the two-node hardware smoke.
+10. [`10-public-trace-storage-baseline.md`](10-public-trace-storage-baseline.md)
+    records the matched durable FAST'25 public-trace storage-path smoke, its
+    raw evidence, and the boundary between whole-path and transport claims.

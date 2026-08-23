@@ -82,7 +82,15 @@ robust dispersion 没有数量级变化、get/remove 中心延迟接近 direct�
 
 阶段四在上述批次范围内已闭环，阶段五未启动。当前证据仍只覆盖两节点、
 两 SSD、单 workload 参数组合，不覆盖多 SSD 扩展、HA/restart、并发 sweep、
-更多 block size、长时间稳定性或与其他 KV-cache 系统的横向比较。
+更多 block size 或长时间稳定性。
+
+补充批次 `20260823T151000Z-public-trace-durable` 已完成 FAST'25 conversation
+公开 trace 的 bounded durable storage-path smoke：5/20 request、local/remote、
+每 cell 三次。该结果证明公开 trace harness 可以在真实持久化路径上稳定执行，
+但 remote 使用 target XFS file -> SPDK AIO -> NVMe-oF -> client XFS，local 使用
+客户端 ext4 上的本地 NVMe；因此它是不同 substrate 的 whole-path 对比，不是
+NVMe-oF transport overhead 或系统优劣结论。完整指标和 raw evidence 见
+[`10-public-trace-storage-baseline.md`](10-public-trace-storage-baseline.md)。
 
 复现实验入口和停止条件见
 [`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)；
