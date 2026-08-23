@@ -1,0 +1,5 @@
+position,case_id,mode,target,operations,p50_latency_us,p95_latency_us,p99_latency_us,operation_rate,produce,reuse,evict,miss,request_count,request_hit_rate,block_hit_rate,miss_rate,request_p50_latency_us,request_p95_latency_us,storage_wait_us,cpu_utilization_pct,local,remote
+pre,direct-remote,direct,remote_nof,148,129.0,197.49,298.211,2610.790942,52,44,52,0,24,0.458333,0.458333,0.0,723.92,780.011,56687.802,,0,148
+pre,transparent-remote,transparent,remote_nof,148,157.56,282.17,390.86,2730.819068,52,44,52,0,24,0.458333,0.458333,0.0,1054.302,1095.851,54196.194,,0,148
+post,direct-remote,direct,remote_nof,148,157.54,255.91,318.98,2576.330807,52,44,52,0,24,0.458333,0.458333,0.0,924.229,999.58,57446.039,,0,148
+post,transparent-remote,transparent,remote_nof,148,159.191,287.23,420.111,2776.306877,52,44,52,0,24,0.458333,0.458333,0.0,1051.632,1229.881,53308.228,,0,148

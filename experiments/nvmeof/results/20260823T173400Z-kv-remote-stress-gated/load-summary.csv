@@ -1,0 +1,5 @@
+trial,sacrificial_iops,sacrificial_completed_ops,measured_iops,measured_bw_GiBps,measured_completed_ops,measured_failed_ops,measured_to_reference_ratio
+1,7.5,15,6974.89,6.81,523117,0,0.9998050528579108
+2,6976.0,13952,6974.84,6.81,523113,0,0.9997978856835693
+3,7.5,15,6974.92,6.81,523119,0,0.9998093531625157
+4,6975.0,13950,6974.81,6.81,523111,0,0.9997935853789645

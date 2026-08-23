@@ -153,3 +153,10 @@ validity/failure evidence。
 
 完整结论见
 [`13-kv-cache-background-load-results.md`](13-kv-cache-background-load-results.md)。
+
+后续 gated supplement 用 sacrificial attach 捕获 NoF startup collapse，再要求
+独立 measured epoch 达到 calibration 的 80--120%。四次 measured load 均为
+`6974.81--6974.92 IOPS`；remote request p50/p95 transparent overhead 为
+`+1.74% / +1.67%`，put p50 为 `+1.77%`。该结果只用于 load-valid paired
+overhead，不把原始无 gate stress epoch 改写为有效。详见
+[`14-kv-cache-gated-remote-stress-results.md`](14-kv-cache-gated-remote-stress-results.md)。

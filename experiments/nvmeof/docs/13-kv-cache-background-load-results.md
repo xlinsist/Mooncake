@@ -125,3 +125,17 @@ operation 分布、load、telemetry、anchor 和 recovery classification；压�
 concurrency、模型 serving/TTFT、精确 remote utilization、transport-only
 overhead、隔离、adaptive policy 或广义 crossover。true-concurrency 实现仍因
 缺少正式 host consensus receipt 而未获授权，本批次没有越过该 gate。
+
+## Gated remote-stress 后续
+
+独立 supplement `20260823T173400Z-kv-remote-stress-gated` 使用 2 秒 sacrificial
+attach 吸收 startup nondeterminism，再对新的 75 秒 measured attach 执行
+achieved-load gate。四个 measured epoch 均为 `6974.81--6974.92 IOPS`，其中两次
+sacrificial attach 自身复现约 7.5 IOPS collapse。
+
+四次 load-valid、counterbalanced pair 的 remote request p50/p95 transparent
+overhead 中位数为 `+1.74% / +1.67%`，put p50 为 `+1.77%`，get p50 为
+`-0.11%`。该结果只说明固定透明封装成本在约 10 ms 的 stressed request 中被
+摊薄；不改写主批次原始 `remote_stress=inconclusive`，也不构成 isolation 或
+absolute idle-to-stress claim。完整证据见
+[`14-kv-cache-gated-remote-stress-results.md`](14-kv-cache-gated-remote-stress-results.md)。

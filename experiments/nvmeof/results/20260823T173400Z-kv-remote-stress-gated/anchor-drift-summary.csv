@@ -1,0 +1,9 @@
+mode,metric,pre,post,drift_pct
+direct,p50_latency_us,129.0,157.54,22.124031
+direct,p95_latency_us,197.49,255.91,29.581245
+direct,request_p50_latency_us,723.92,924.229,27.670046
+direct,request_p95_latency_us,780.011,999.58,28.149475
+transparent,p50_latency_us,157.56,159.191,1.035161
+transparent,p95_latency_us,282.17,287.23,1.793245
+transparent,request_p50_latency_us,1054.302,1051.632,-0.253248
+transparent,request_p95_latency_us,1095.851,1229.881,12.230677

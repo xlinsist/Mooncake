@@ -1,0 +1,17 @@
+{
+  "anchor_case_rows": 4,
+  "case_rows": 8,
+  "failures": [],
+  "load_epochs": 4,
+  "measured_iops_range": [
+    6974.81,
+    6974.92
+  ],
+  "reference_iops": 6976.25,
+  "sacrificial_collapses": 2,
+  "status": "pass",
+  "telemetry_case_rows": 12,
+  "trace_digests": [
+    "3a49f1f79b9fdd5df28ad41190dfb5839524ef397052bae178b7f4e9b9d47051"
+  ]
+}

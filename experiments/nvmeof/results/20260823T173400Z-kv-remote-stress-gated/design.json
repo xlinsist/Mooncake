@@ -1,0 +1,28 @@
+{
+  "run_id": "20260823T173400Z",
+  "purpose": "Recover a load-valid remote 1 MiB/QD32 stress comparison without reclassifying the original invalid epochs.",
+  "workload": {
+    "requests": 24,
+    "blocks_per_request": 4,
+    "block_size": 131072,
+    "reuse_ratio": 0.5,
+    "configured_concurrency": 1,
+    "seed": 42
+  },
+  "load_gate": {
+    "reference_iops": 6976.25,
+    "sacrificial_attach_runtime_sec": 2,
+    "measured_runtime_sec": 75,
+    "accepted_ratio": [0.8, 1.2],
+    "required_failed_ops": 0
+  },
+  "trials": 4,
+  "mode_order": {
+    "1": "direct_then_transparent",
+    "2": "transparent_then_direct",
+    "3": "direct_then_transparent",
+    "4": "transparent_then_direct"
+  },
+  "anchors": ["remote_idle_pre", "remote_idle_post"],
+  "claim_boundary": "Paired transparent overhead under a gated remote offered-load point only; no true concurrency, serving, exact utilization, isolation, transport-only, or generalized stress claim."
+}

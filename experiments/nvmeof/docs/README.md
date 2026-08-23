@@ -40,3 +40,6 @@ verified transparent heterogeneous-storage deployment.
 13. [`13-kv-cache-background-load-results.md`](13-kv-cache-background-load-results.md)
     records the counterbalanced idle/local-load/remote-stress sweep, achieved
     load gates, per-case telemetry, remote-stress instability, and recovery.
+14. [`14-kv-cache-gated-remote-stress-results.md`](14-kv-cache-gated-remote-stress-results.md)
+    records the sacrificial-attach load gate, four valid remote-stress pairs,
+    paired overhead distributions, anchor drift, and recovery evidence.
