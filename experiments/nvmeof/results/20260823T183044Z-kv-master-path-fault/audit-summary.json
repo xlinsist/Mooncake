@@ -1,0 +1,77 @@
+[
+  {
+    "initial_audit": {
+      "ever_readable": false,
+      "keys": 1,
+      "observed_ms": 0,
+      "published_complete_replica": false,
+      "remove_return_codes": [],
+      "residue_cleared": false,
+      "samples": 0
+    },
+    "original_client_close_epoch": null,
+    "post_close_audit": {
+      "ever_readable": false,
+      "keys": 0,
+      "observed_ms": 0,
+      "published_complete_replica": false,
+      "remove_return_codes": [],
+      "residue_cleared": null,
+      "samples": 0
+    },
+    "post_close_audit_started_epoch": null,
+    "run_id": "20260823T181404Z"
+  },
+  {
+    "initial_audit": {
+      "ever_readable": false,
+      "keys": 1,
+      "observed_ms": 14539.167404174805,
+      "published_complete_replica": false,
+      "remove_return_codes": [
+        -703
+      ],
+      "residue_cleared": false,
+      "samples": 59
+    },
+    "original_client_close_epoch": null,
+    "post_close_audit": {
+      "ever_readable": false,
+      "keys": 0,
+      "observed_ms": 0,
+      "published_complete_replica": false,
+      "remove_return_codes": [],
+      "residue_cleared": null,
+      "samples": 0
+    },
+    "post_close_audit_started_epoch": null,
+    "run_id": "20260823T182234Z"
+  },
+  {
+    "initial_audit": {
+      "ever_readable": false,
+      "keys": 1,
+      "observed_ms": 14491.199493408203,
+      "published_complete_replica": false,
+      "remove_return_codes": [
+        -703
+      ],
+      "residue_cleared": false,
+      "samples": 59
+    },
+    "original_client_close_epoch": 1787509677.9801521,
+    "post_close_audit": {
+      "ever_readable": false,
+      "keys": 1,
+      "observed_ms": 14505.366563796997,
+      "published_complete_replica": false,
+      "remove_return_codes": [
+        -703
+      ],
+      "residue_cleared": false,
+      "samples": 59
+    },
+    "post_close_audit_started_epoch": 1787509677.9801543,
+    "run_id": "20260823T183044Z"
+  }
+]

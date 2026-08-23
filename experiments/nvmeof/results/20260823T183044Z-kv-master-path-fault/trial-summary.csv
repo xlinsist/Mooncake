@@ -1,0 +1,4 @@
+run_id,mode,trial,status,pre_fault_successes,fault_window_failures,post_fault_successes,first_failure_detection_ms,recovery_latency_ms,persistent_client_recovered,initial_audit_samples,initial_residue_cleared,post_close_audit_samples,post_close_residue_cleared,ever_readable,published_complete_replica,product_failures,evidence_failures
+20260823T181404Z,direct,1,fail,10,1,8,1042.6459312438965,146.8198299407959,True,0,False,0,,False,False,remove 20260823T181404Z-direct-trial1-request0010 returned -703,
+20260823T182234Z,direct,1,fail,9,1,8,1012.0689868927002,98.38628768920898,True,59,False,0,,False,False,failed put residue exceeded cleanup deadline,
+20260823T183044Z,direct,1,fail,9,1,8,1023.4920978546143,145.89214324951172,True,59,False,59,False,False,False,failed put residue exceeded cleanup deadline; failed put residue exceeded post-client-close deadline,

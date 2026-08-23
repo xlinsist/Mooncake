@@ -43,3 +43,7 @@ verified transparent heterogeneous-storage deployment.
 14. [`14-kv-cache-gated-remote-stress-results.md`](14-kv-cache-gated-remote-stress-results.md)
     records the sacrificial-attach load gate, four valid remote-stress pairs,
     paired overhead distributions, anchor drift, and recovery evidence.
+15. [`15-kv-cache-master-path-fault-results.md`](15-kv-cache-master-path-fault-results.md)
+    records sequential client-to-Master fault detection and recovery, safe
+    non-publication, the post-client-close failed-put residue, and exact
+    hardware restoration evidence.

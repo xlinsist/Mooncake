@@ -1,0 +1,11 @@
+{
+  "claim_boundary": "Sequential single-client client-to-Master TCP fault only",
+  "completed_trials": 1,
+  "matrix_completed": false,
+  "operation_recovery_observed": true,
+  "planned_trials": 6,
+  "status": "fail",
+  "stop_reason": "failed put residue exceeded post-client-close deadline",
+  "true_concurrency_claimed": false,
+  "unsafe_publication_observed": false
+}

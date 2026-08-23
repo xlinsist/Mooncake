@@ -1,0 +1,43 @@
+{
+  "purpose": "Measure sequential remote KV failure detection, persistent-client recovery, and failed-put residue clearance during a reversible client-to-Master path fault.",
+  "workload": {
+    "block_size": 131072,
+    "configured_concurrency": 1,
+    "modes": [
+      "direct",
+      "transparent",
+      "transparent",
+      "direct",
+      "direct",
+      "transparent"
+    ],
+    "pre_fault_successes_required": 8,
+    "post_fault_successes_required": 8
+  },
+  "fault": {
+    "kind": "client_to_master_tcp_drop",
+    "destination": "10.0.0.34:50051",
+    "duration_seconds": 3,
+    "rpc_timeout_ms": 1000,
+    "probe_process_timeout_seconds": 120,
+    "rule_counter_must_be_positive": true,
+    "rule_absence_must_be_proven": true
+  },
+  "gates": {
+    "fault_window_failure_required": true,
+    "persistent_client_recovery_required": true,
+    "failed_put_complete_replicas_allowed": 0,
+    "failed_put_residue_timeout_seconds": 15,
+    "initial_residue_timeout_is_reported_product_failure_but_matrix_may_continue_only_to_characterize_client_close": true,
+    "post_client_close_residue_timeout_seconds": 15,
+    "seed_content_and_descriptor_must_survive": true,
+    "target_service_and_subsystem_must_be_unchanged": true,
+    "final_round_robin_recovery_required": true
+  },
+  "prohibited_actions": [
+    "target service restart",
+    "target subsystem unregister",
+    "true-concurrency implementation or claim"
+  ],
+  "claim_boundary": "Single-client sequential recovery from a short client-to-Master TCP fault. Controller completion does not imply every trial passed: the sole tolerated per-trial product failure is initial failed-put residue beyond 15 seconds, and only when the post-client-close audit is complete, remains unreadable with zero COMPLETE replicas, and clears within its separate 15-second deadline. Not HA, serving, NoF data-path failure, target failure, or true concurrency."
+}
