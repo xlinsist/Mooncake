@@ -1,0 +1,34 @@
+{
+  "all_final_recovery_passed": true,
+  "claim_boundary": "Sequential arrival-paced replay only; no request overlap, true concurrency, saturation-throughput, or serving claim.",
+  "client_inventory_equal_for_new_scales": true,
+  "errors": [],
+  "observed_cases": 90,
+  "planned_cases": 90,
+  "replay_scales": [
+    5,
+    10,
+    20
+  ],
+  "source_digests": {
+    "conversation": [
+      "b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df"
+    ],
+    "toolagent": [
+      "48a2db1a13d3bc05e6330140c64f604ba366df20d3c9e128b5c35a01c1fa5f71"
+    ]
+  },
+  "status": "pass",
+  "store_gets": 90972,
+  "store_payload_bytes_put_plus_get": 112901750784,
+  "store_puts": 770400,
+  "store_removes": 770400,
+  "trace_digests": {
+    "conversation": [
+      "92c34e75878255b8588220260254f8b638a6df57b5ce7052d03a0286edb6366a"
+    ],
+    "toolagent": [
+      "8843fe3ca84732c466c8e3d3b455df206c7808b97d7936c97c2250fe1eb0c4e4"
+    ]
+  }
+}

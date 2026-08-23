@@ -62,3 +62,6 @@ verified transparent heterogeneous-storage deployment.
 20. [`20-public-trace-store-pacing-results.md`](20-public-trace-store-pacing-results.md)
     records 10x sequential FAST'25 arrival pacing, schedule debt, paired Store
     overhead, the explicit no-concurrency boundary, and recovery evidence.
+21. [`21-public-trace-store-pacing-scale-results.md`](21-public-trace-store-pacing-scale-results.md)
+    extends sequential arrival pressure to 5x/10x/20x, identifies schedule-debt
+    boundaries, and preserves the distinction from true concurrency.
