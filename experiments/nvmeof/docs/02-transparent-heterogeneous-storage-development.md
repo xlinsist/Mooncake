@@ -42,7 +42,7 @@ remove(key)
 5. `ROUND_ROBIN` 在可用目标之间稳定轮转，失败写入不发布元数据。
 6. get 根据已提交的 replica metadata 选择源，而不是依赖调用方记忆写入位置。
 7. remove 通过统一对象生命周期回收元数据和对应后端资源。
-8. client restart 后路由不依赖进程内 map；启用 snapshot/oplog 时支持 Master HA restart；backend owner restart 按重注册协议恢复。
+8. client restart 后路由不依赖进程内 map。
 9. 单测覆盖策略、状态转换、失败回滚和并发；NoF 环境完成端到端验证。
 
 ## 3. 非目标
@@ -353,8 +353,7 @@ remove 继续以 Master object metadata 驱动。当前单对象 remove 不能�
 3. owner 按稳定 backend locator 幂等删除并返回 ACK；
 4. Master 收齐 ACK 后删除 object metadata；
 5. owner 离线或 RPC 失败时保留 REMOVING 与重试任务，get 不再返回对象；
-6. 重试状态必须进入 snapshot/oplog，Master failover 后继续执行；
-7. 超过重试预算时暴露告警与 orphan metric，不得先遗忘对象位置。
+6. 超过重试预算时暴露告警与 orphan metric，不得先遗忘对象位置。
 
 透明层不应维护“local 调一次、remote 调一次”的盲删逻辑。
 
@@ -449,7 +448,6 @@ Direct Mooncake NoF intent  vs Store API -> transparent layer -> NoF
 
 - `legacy` 下现有 `ReplicateConfig` 行为不变；
 - 显式 manual config 不被全局 policy 改写；
-- snapshot/HA 序列化可识别扩展后的 descriptor；
 - checksum、tenant quota、soft/hard pin 行为不回退。
 
 ### 13.2 本地集成测试
@@ -468,17 +466,13 @@ Direct Mooncake NoF intent  vs Store API -> transparent layer -> NoF
 - local-only put/get/remove；
 - round-robin 连续对象的实际位置分布；
 - 子进程/另一 client 读取；
-- 开启 snapshot/oplog 后的 Master HA restart 恢复；
 - NoF target 或 local backend 不可用时严格失败且无 phantom metadata。
 
-重启测试必须拆开验证，不能用笼统的“进程重启后可恢复”代替：
+客户端重启验证不能用笼统的“进程重启后可恢复”代替：
 
 | 场景 | 恢复来源 | 预期语义 |
 | --- | --- | --- |
 | Store API client restart | Master replica metadata | 新 client 不依赖旧进程内 map，可正常查询和读取 remote；local 由 owner endpoint 路由 |
-| Master HA restart/failover | snapshot + oplog | COMPLETE/REMOVING 状态、descriptor 与删除重试任务均恢复；未启用 HA 时不承诺此项 |
-| Local backend owner restart | 本地 backend scan + segment re-registration | owner 使用稳定 host/backend identity 重新绑定 locator；恢复完成前 local replica 不可选 |
-| NoF service restart | 现有 NoF remount/recovery contract | locator 重新可用后恢复读取；无法重绑则副本标记 FAILED 而非静默成功 |
 
 ## 14. 可观测性
 

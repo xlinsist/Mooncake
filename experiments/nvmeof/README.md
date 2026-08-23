@@ -82,14 +82,10 @@ MC_HETERO_STORAGE_POLICY=local_only ./run.sh transparent-local-unavailable
 MC_HETERO_STORAGE_POLICY=remote_only ./run.sh transparent-remote-unavailable
 ```
 
-Restart acceptance is deliberately split into two commands. The seed command
-writes objects and records their keys, hashes, expected descriptors, and the
-named restart scenario. Non-client scenarios also require an opaque incarnation
-witness, such as a systemd `InvocationID`, process start time, HA view ID, or
-another deployment-specific identity. Capture it before and after the restart;
-the verifier rejects an unchanged identity. Client restart uses the Python PID
-automatically. Perform the stated restart between the commands, then run verify
-from a fresh process. Verify resolves every object from Master metadata, checks
+Client-restart acceptance is split into two commands. The seed command writes
+objects and records their keys, hashes, and expected descriptors. Restart the
+Store API client process between the commands, then run verification from a
+fresh process. Verification resolves every object from Master metadata, checks
 its descriptor and contents, and removes it:
 
 Choose one unique batch ID and keep it unchanged for every lifecycle,
@@ -106,33 +102,6 @@ TRANSPARENT_RESTART_TARGETS=local_nvme,remote_nof \
   ./run.sh transparent-restart-seed
 # Restart the Store API client process only.
 TRANSPARENT_RESTART_SCENARIO=client_restart ./run.sh transparent-restart-verify
-
-TRANSPARENT_RESTART_SCENARIO=master_ha_restart \
-TRANSPARENT_RESTART_TARGETS=local_nvme,remote_nof \
-TRANSPARENT_RESTART_WITNESS=master-before-incarnation \
-  ./run.sh transparent-restart-seed
-# Fail over or restart the HA Master, preserving snapshot/oplog state.
-TRANSPARENT_RESTART_SCENARIO=master_ha_restart \
-TRANSPARENT_RESTART_WITNESS=master-after-incarnation \
-  ./run.sh transparent-restart-verify
-
-TRANSPARENT_RESTART_SCENARIO=local_owner_restart \
-TRANSPARENT_RESTART_TARGETS=local_nvme \
-TRANSPARENT_RESTART_WITNESS=owner-before-incarnation \
-  ./run.sh transparent-restart-seed
-# Restart the local backend owner and wait for backend rebind.
-TRANSPARENT_RESTART_SCENARIO=local_owner_restart \
-TRANSPARENT_RESTART_WITNESS=owner-after-incarnation \
-  ./run.sh transparent-restart-verify
-
-TRANSPARENT_RESTART_SCENARIO=nof_service_restart \
-TRANSPARENT_RESTART_TARGETS=remote_nof \
-TRANSPARENT_RESTART_WITNESS=nof-before-incarnation \
-  ./run.sh transparent-restart-seed
-# Restart the NoF service and wait for segment remount.
-TRANSPARENT_RESTART_SCENARIO=nof_service_restart \
-TRANSPARENT_RESTART_WITNESS=nof-after-incarnation \
-  ./run.sh transparent-restart-verify
 ```
 
 For the phase-four transparent-layer increment, run the same Store API workload
@@ -145,30 +114,6 @@ affinity, and persistence settings identical:
 TRANSPARENT_BENCH_TARGET=local_nvme ./run.sh transparent-overhead
 TRANSPARENT_BENCH_TARGET=remote_nof ./run.sh transparent-overhead
 ```
-
-After all lifecycle, unavailable-target, restart, and paired-overhead commands
-have written into the same `RESULT_DIR`, generate the software-verification
-artifact and run the strict evidence gate:
-
-```bash
-./run.sh transparent-software-verification
-./run.sh transparent-acceptance
-```
-
-The software command runs the relevant build, CTest, Python tests, and
-PR-scoped pre-commit hooks; a missing tool or failed command produces a failed
-artifact. The acceptance command writes `transparent-acceptance.json` and
-fails unless all twelve required
-artifacts report `status=pass` with the same `TRANSPARENT_RUN_ID`, the expected
-policy, restart scenario, changed restart witness, verified descriptor, and
-paired direct/transparent metrics. This gate does not synthesize missing
-hardware evidence or combine stale artifacts from different runs.
-
-The gate validates recorded evidence; it is not a cryptographic hardware
-attestation mechanism. Capture non-client restart witnesses from a trusted
-deployment source (for example systemd `InvocationID`, process start time, or
-the HA view ID), retain the corresponding service logs with the result
-directory, and do not use operator-chosen placeholder strings for acceptance.
 
 Local NVMe acceptance and benchmark commands require
 `SSD_OFFLOAD_PATH=/path/to/local/nvme`; the runner enables SSD offload
@@ -186,3 +131,33 @@ and explicit `ReplicateConfig`; it is not a fio/POSIX baseline. Existing
 `nof-benchmark` and same-SSD commands remain the device/path characterization
 controls. The Master's `placement_decision_latency_us` metric separately
 isolates policy-decision software time.
+
+## KV-cache workload trace replay
+
+The independent workload path models `produce`, `reuse`, `evict`, and `miss`
+events without changing the transparent overhead baseline. Generation is fully
+deterministic for a fixed seed and writes the trace manifest alongside the
+trace. A run directory contains `trace.jsonl`, `manifest.json`, one
+`raw-<case>.json` per replay, and offline `operations.csv`, `summary.csv`, and
+`conclusion.json` artifacts:
+
+```bash
+KV_WORKLOAD_RUN_ID=smoke KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  ./run.sh kv-workload-generate
+KV_WORKLOAD_MODE=no_store KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  ./run.sh kv-workload-replay
+KV_WORKLOAD_MODE=direct KV_WORKLOAD_TARGET=remote_nof \
+KV_WORKLOAD_CASE_ID=direct-remote KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  ./run.sh kv-workload-replay
+KV_WORKLOAD_RESULT_DIR=results/kv-workload/smoke \
+  KV_WORKLOAD_REQUIRED_CASES=no_store,direct-remote ./run.sh kv-workload-summarize
+```
+
+`direct` and `transparent` invoke the configured Store environment; `no_store`
+uses only the fixed recomputation proxy recorded in the raw result. The
+summarizer is offline and returns `status=inconclusive` for failed or missing
+cases, duplicate case IDs, mixed run IDs, or mixed trace digests. Descriptor
+source counts are kept separate for `local_nvme` and `remote_nof`; they are not
+inferred from policy. This workflow reports synthetic/request-level proxy
+metrics only and does not claim model execution, HA behavior, or cluster-scale
+results.
