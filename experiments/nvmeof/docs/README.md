@@ -59,3 +59,6 @@ verified transparent heterogeneous-storage deployment.
 19. [`19-public-trace-store-capacity-results.md`](19-public-trace-store-capacity-results.md)
     records 16/64/256-page public-trace Store sensitivity, hit-rate changes,
     paired overhead distributions, and unified restoration gates.
+20. [`20-public-trace-store-pacing-results.md`](20-public-trace-store-pacing-results.md)
+    records 10x sequential FAST'25 arrival pacing, schedule debt, paired Store
+    overhead, the explicit no-concurrency boundary, and recovery evidence.
