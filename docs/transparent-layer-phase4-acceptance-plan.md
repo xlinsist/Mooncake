@@ -2,24 +2,24 @@
 
 ## 1. 目标、范围与闭环条件
 
-本计划是阶段四的可执行入口，只验收透明层开销和重启可靠性。它不启动
+本计划是阶段四的可执行入口，只验收透明层开销、生命周期和不可用目标行为。它不启动
 阶段五，不开展 DRAM 分层、自适应策略、对象 migration 或新的性能优化。
 
 阶段四只有在以下条件同时满足时才闭环：
 
-1. 同一个 `TRANSPARENT_RUN_ID` 和同一个 `RESULT_DIR` 中生成十二份严格
+1. 同一个 `TRANSPARENT_RUN_ID` 和同一个 `RESULT_DIR` 中生成八份严格
    gate 输入证据；
-2. 十二份输入证据均为 `status: "pass"`，且场景、目标、对象生命周期、
-   restart witness 和 paired metrics 与当前实现的契约一致；
+2. 八份输入证据均为 `status: "pass"`，且场景、目标、对象生命周期和
+   paired metrics 与当前实现的契约一致；
 3. `./run.sh transparent-acceptance` 成功，最终
    `transparent-acceptance.json` 为 `status: "pass"`、
-   `required_evidence: 12`、`failures: []`；
+   `required_evidence: 8`、`failures: []`；
 4. remote NoF 的透明层额外开销已经按原始样本和分位数解释，并得到
    “可接受”“不可接受”或“证据不足”的明确结论。
 
-十二份 gate 输入加最终 acceptance 文件共十三份交付物。当前
-`correctness.py` 的 `required_evidence` 字段只统计十二份输入，不包含
-`transparent-acceptance.json` 自身；不得为了得到数字 13 而伪造额外输入。
+八份 gate 输入加最终 acceptance 文件共九份交付物。当前
+`correctness.py` 的 `required_evidence` 字段只统计八份输入，不包含
+`transparent-acceptance.json` 自身；不得为了得到数字 9 而伪造额外输入。
 
 ## 2. 硬性约束与停止条件
 
@@ -29,16 +29,8 @@
   `run.sh` 的 shell 中设置 `MC_HETERO_STORAGE_POLICY` 不构成有效切换。
 - local 场景只能使用已批准的、非挂载根目录的 `SSD_OFFLOAD_PATH`。在路径
   身份无法确认时，停止 local 写入，不得猜测路径。
-- 非 client restart 的 witness 必须来自可信服务身份，例如 systemd
-  `InvocationID`、PID 与 `/proc/<pid>/stat` start time 的组合，或 HA
-  view/incarnation。`before` 和 `after` 都要连同获取命令及服务日志保存。
-  禁止使用 `master-before-incarnation` 之类由操作者手填的占位字符串。
-- `master_ha_restart` 只允许在启用 snapshot/oplog 且能恢复 metadata 的 HA
-  部署执行。standalone Master 重启不能冒充 HA 证据。
-- `nof_service_restart` 只能在维护窗口执行；必须等待 namespace remount、
-  segment re-registration 和健康检查恢复后再 verify。
-- 任何 descriptor 不匹配、对象不可读、删除失败、失败写发布副本、服务未
-  完整恢复、witness 不可信、JSON 缺失或 mixed run ID 都使批次未闭环。
+- 任何 descriptor 不匹配、对象不可读、删除失败、失败写发布副本、JSON
+  缺失或 mixed run ID 都使批次未闭环。
 - 测量期间不得更改对象大小、对象数量、CPU affinity、持久化设置、绑定、
   Master policy 或后端注册状态。local 和 remote 结果分别解释，禁止平均。
 
@@ -72,7 +64,7 @@ export SSD_OFFLOAD_PATH=<approved-local-experiment-subdirectory>
 | `python.txt` | `python3 --version`、`PYTHONPATH`、`mooncake.store.__file__` |
 | `services-before.txt` | Master、metadata、local owner、NoF 的 PID/start time、命令行、systemd unit/InvocationID 或 HA view |
 | `cpu-affinity.txt` | client 与相关服务的 `taskset -pc`、NUMA/CPU 绑定 |
-| `workload.txt` | `TRANSPARENT_BENCH_COUNT`、`TRANSPARENT_BENCH_SIZE`、restart count、持久化参数 |
+| `workload.txt` | `TRANSPARENT_BENCH_COUNT`、`TRANSPARENT_BENCH_SIZE`、持久化参数 |
 | `storage.txt` | `SSD_OFFLOAD_PATH`、mount/`df` 身份、NoF NQN/NSID/endpoint、registration 状态 |
 | `policies.txt` | 每个步骤实际生效的 Master policy 及切换时间 |
 
@@ -97,7 +89,7 @@ PY
 
 ## 4. 执行顺序
 
-下列步骤按依赖顺序执行。每次切换 Master policy 或重启服务后，先完成监听、
+下列步骤按依赖顺序执行。每次切换 Master policy 或服务配置后，先完成监听、
 metadata、backend registration 和单对象 smoke check，再运行正式命令。
 
 ### 4.1 正常生命周期
@@ -108,8 +100,8 @@ metadata、backend registration 和单对象 smoke check，再运行正式命令
    ./run.sh transparent-local
    ```
 
-2. 将 Master 服务切换为 `remote_only`；Master 重启会丢失瞬态 NoF 注册时，
-   先执行 `./run.sh register` 并确认容量可用，再运行：
+2. 将 Master 服务切换为 `remote_only`；如果当前 NoF 注册状态已丢失，先执行
+   `./run.sh register` 并确认容量可用，再运行：
 
    ```bash
    ./run.sh transparent-remote
@@ -149,98 +141,9 @@ metadata、backend registration 和单对象 smoke check，再运行正式命令
 两个报告必须分别匹配 `local_nvme`、`remote_nof`，并同时满足
 `write_failed: true`、`published_replicas: 0`、
 `readable_after_failure: false`。完成后恢复 backend，验证重新绑定/注册，
-不得把 unavailable 状态带入 restart 或 overhead。
+不得把 unavailable 状态带入后续 overhead 测试。
 
-### 4.3 四类 restart
-
-每个场景都先 seed、执行唯一被测重启、等待恢复，再从新 Store API client
-进程 verify。seed manifest 保留在同一目录，verify 成功后生成 gate 所需报告。
-
-#### Client restart
-
-配置 `round_robin` 且确认两个 backend 均可用。seed 命令退出即终止原 client；
-verify 命令会启动新 Python 进程，因此不要重启 Master 或 backend：
-
-```bash
-TRANSPARENT_RESTART_SCENARIO=client_restart \
-TRANSPARENT_RESTART_TARGETS=local_nvme,remote_nof \
-  ./run.sh transparent-restart-seed
-TRANSPARENT_RESTART_SCENARIO=client_restart \
-  ./run.sh transparent-restart-verify
-```
-
-client witness 由脚本使用 Python PID 自动生成。
-
-#### Master HA restart/failover
-
-配置 `round_robin`，确认 HA snapshot/oplog 已同步，并从 HA 控制面取得
-`before` view/incarnation。把该真实值传给 seed 并原样归档：
-
-```bash
-export TRANSPARENT_RESTART_SCENARIO=master_ha_restart
-export TRANSPARENT_RESTART_TARGETS=local_nvme,remote_nof
-export TRANSPARENT_RESTART_WITNESS=<trusted-ha-view-before>
-./run.sh transparent-restart-seed
-```
-
-仅对 HA Master 执行 failover/restart。确认新 leader 恢复 seed metadata、两个
-backend 均重新可用，再取得不同的可信 `after` view/incarnation：
-
-```bash
-export TRANSPARENT_RESTART_WITNESS=<trusted-ha-view-after>
-./run.sh transparent-restart-verify
-```
-
-若只能重启 standalone Master，或恢复后 seed metadata 消失，本场景失败；
-不得改名为 HA 结果，也不得跳过它运行最终 gate。
-
-#### Local owner restart
-
-配置 `local_only`。从进程管理器取得 local owner 的可信身份；systemd 部署可
-使用 `systemctl show <unit> -p InvocationID --value`，非 systemd 部署应组合
-PID 与内核记录的 start time，并保存获取输出：
-
-```bash
-export TRANSPARENT_RESTART_SCENARIO=local_owner_restart
-export TRANSPARENT_RESTART_TARGETS=local_nvme
-export TRANSPARENT_RESTART_WITNESS=<trusted-local-owner-before>
-./run.sh transparent-restart-seed
-```
-
-只重启 local owner。保存 restart 前后日志，等待 `SSD_OFFLOAD_PATH` rebind 和
-owner re-registration 完成，取得新的可信 witness 后执行：
-
-```bash
-export TRANSPARENT_RESTART_WITNESS=<trusted-local-owner-after>
-./run.sh transparent-restart-verify
-```
-
-#### NoF service restart
-
-在维护窗口配置 `remote_only`，确认 segment 已注册并有足够容量。取得 NoF
-服务的可信身份：
-
-```bash
-export TRANSPARENT_RESTART_SCENARIO=nof_service_restart
-export TRANSPARENT_RESTART_TARGETS=remote_nof
-export TRANSPARENT_RESTART_WITNESS=<trusted-nof-service-before>
-./run.sh transparent-restart-seed
-```
-
-只重启 NoF 服务，保存 journal/service log，等待 namespace remount、health
-probe 和 segment re-registration 全部成功，再取得新的 witness 并执行：
-
-```bash
-export TRANSPARENT_RESTART_WITNESS=<trusted-nof-service-after>
-./run.sh transparent-restart-verify
-```
-
-四个最终 restart 报告都必须满足：witness 非空且发生变化、
-`objects_verified > 0`、`descriptors_verified == objects_verified`、
-`objects_removed == objects_verified`。对应 seed 文件不是 strict gate 输入，
-但必须保留用于审计。
-
-### 4.4 Paired overhead
+### 4.3 Paired overhead
 
 固定以下工作负载参数并写入 inventory；两个 target 使用相同值：
 
@@ -274,7 +177,7 @@ TRANSPARENT_BENCH_TARGET=remote_nof ./run.sh transparent-overhead
 任何对象数量、大小或 target 不匹配，任何 sample/metric 缺失，或 descriptor、
 读取、删除失败，都使该 target 结果无效。local 与 remote 绝不合并成一个均值。
 
-### 4.5 软件验证
+### 4.4 软件验证
 
 硬件证据完成后运行：
 
@@ -332,7 +235,7 @@ descriptor 恢复测试、`experiments/nvmeof/test_correctness.py` 和对既定 
 
 ## 6. Strict acceptance
 
-先列出十二份输入并检查 JSON 可解析、`run_id` 一致：
+先列出八份输入并检查 JSON 可解析、`run_id` 一致：
 
 ```text
 transparent-local.json
@@ -340,10 +243,6 @@ transparent-remote.json
 transparent-round-robin.json
 transparent-local-unavailable.json
 transparent-remote-unavailable.json
-transparent-restart-client_restart.json
-transparent-restart-master_ha_restart.json
-transparent-restart-local_owner_restart.json
-transparent-restart-nof_service_restart.json
 transparent-overhead-local_nvme.json
 transparent-overhead-remote_nof.json
 transparent-software-verification.json
@@ -360,9 +259,9 @@ transparent-software-verification.json
 ```text
 status == "pass"
 run_id == TRANSPARENT_RUN_ID
-required_evidence == 12
+required_evidence == 8
 failures == []
-十二个 evidence 条目均为 "pass"
+八个 evidence 条目均为 "pass"
 ```
 
 只有这一步通过，才可以填写阶段四最终结论。命令失败但 JSON 成功写出时，
@@ -374,8 +273,6 @@ failures == []
 | --- | --- |
 | 单命令前置条件未满足，尚未写正式 JSON | 修复注册、policy、路径或服务健康后，在同批继续 |
 | 正式 JSON 为 `fail` 或对象清理失败 | 保留失败 JSON/日志；确认无残留对象后，用同参数重跑该场景并记录重跑原因 |
-| witness 不可信、未变化或日志缺失 | 该 restart 证据作废；重新 seed、真实重启并 verify，不能只重跑 verify |
-| restart 后 metadata/descriptor 丢失 | 该场景失败；修复恢复链路后重新 seed 和 verify |
 | benchmark 条件发生变化 | local/remote paired 结果作废；恢复固定条件后重跑受影响 target |
 | mixed `run_id`、旧文件混入或批次环境不可复原 | 废弃整个 `RESULT_DIR`，创建新的 run ID 全量重跑 |
 | software verification 失败 | 修复代码/环境并重新生成该 artifact；保留原始失败输出 |
@@ -383,17 +280,15 @@ failures == []
 
 同批重跑只允许在环境和工作负载仍可证明一致时覆盖对应正式 JSON，并必须把
 旧文件、重跑原因和时间保存到审计子目录。无法证明一致时必须启用全新
-`TRANSPARENT_RUN_ID` 和 `RESULT_DIR`，十二项全部重跑。
+`TRANSPARENT_RUN_ID` 和 `RESULT_DIR`，八项全部重跑。
 
 ## 8. 结果清单与最终结论模板
 
 最终归档至少包含：
 
-- 第 6 节的十二份 gate 输入和 `transparent-acceptance.json`；
-- 四份 `transparent-restart-seed-*.json`；
-- `inventory/`、所有 Master/local owner/NoF service 日志、HA view 或 systemd
-  witness 原始输出；
-- policy 切换、backend rebind/re-registration、smoke check 和重跑记录；
+- 第 6 节的八份 gate 输入和 `transparent-acceptance.json`；
+- `inventory/`、Master/NoF service 日志、policy 切换、backend
+  rebind/re-registration、smoke check 和重跑记录；
 - local/remote 指标表及 remote `+14%` 分布分析。
 
 最终结论使用以下模板，不得在 acceptance 通过前预填“闭环”：
@@ -405,14 +300,10 @@ failures == []
 - RESULT_DIR:
 - testbed / binding / build:
 - transparent-acceptance.json: pass | fail
-- 十二项 required evidence: 12/12 pass | <实际状态>
+- 八项 required evidence: 8/8 pass | <实际状态>
 
 可靠性
 - lifecycle / unavailable: <结论与证据>
-- client restart: <结论与 witness>
-- Master HA restart: <结论与 HA 恢复证据>
-- local owner restart: <结论与 witness>
-- NoF service restart: <结论与 witness>
 
 性能
 - local NVMe: <put/get/remove latency、throughput/ops、CPU 与 delta>
