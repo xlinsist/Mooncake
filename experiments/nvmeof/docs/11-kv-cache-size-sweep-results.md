@@ -64,3 +64,6 @@ Git 内证据入口为
 对象大小证据，但不验证真实 concurrency、负载敏感 placement、serving SLO
 或多 target scaling。已有 true-concurrency 计划仍因缺少正式 host consensus
 receipt 而未获执行授权，本结果不能替代该 gate。
+
+固定 128 KiB 的 0%/50%/90% reuse 补充轴见
+[`12-kv-cache-reuse-sweep-results.md`](12-kv-cache-reuse-sweep-results.md)。

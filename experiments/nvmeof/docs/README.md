@@ -34,3 +34,6 @@ verified transparent heterogeneous-storage deployment.
 11. [`11-kv-cache-size-sweep-results.md`](11-kv-cache-size-sweep-results.md)
     records the repeated 16--256 KiB two-node size sweep, paired transparent
     overhead, descriptor invariants, and the root-Master heartbeat fix.
+12. [`12-kv-cache-reuse-sweep-results.md`](12-kv-cache-reuse-sweep-results.md)
+    records the repeated 0--90% reuse sweep, request-latency sensitivity,
+    paired transparent overhead, and final round-robin recovery evidence.

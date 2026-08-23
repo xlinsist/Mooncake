@@ -116,3 +116,19 @@ probe 因 IOVA PA 权限失败，连续失败后卸载 segment，表面报错为
 完成剩余 matrix 及 6 local + 6 remote 的 round-robin recovery smoke。
 完整结论和原始证据见
 [`11-kv-cache-size-sweep-results.md`](11-kv-cache-size-sweep-results.md)。
+
+## Reuse Ratio 补充 Sweep
+
+补充批次 `20260823T155044Z-kv-reuse-sweep` 固定 128 KiB，完成
+0%/50%/90% reuse、每档三次重复的 matched matrix。45/45 个 case 通过，
+实际 block/request hit rate 为 0%/45.8333%/91.6667%，所有 case 均为
+0 miss 且 descriptor 全部匹配。
+
+从 0% 到 90% reuse，request p50 中位数下降 29.91--40.78%。remote
+transparent-minus-direct put p50 overhead 在三档中稳定为
+`+15.26% / +16.79% / +14.71%`，get/remove p50 接近 direct。90% reuse 时
+get-dominated request p50 overhead 降到约 0%，但 request p95 仍为 `+13.93%`，
+因此只说明 put 成本被多数 reuse request 摊薄，不说明 tail 成本消失。
+
+完整结论、分布和恢复证据见
+[`12-kv-cache-reuse-sweep-results.md`](12-kv-cache-reuse-sweep-results.md)。
