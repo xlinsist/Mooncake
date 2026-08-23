@@ -133,6 +133,21 @@ def test_transparent_replay_records_and_revalidates_actual_descriptor():
     assert store.closed
 
 
+@pytest.mark.parametrize("target", ["local_nvme", "remote_nof"])
+def test_transparent_replay_explicit_target_overrides_trace_policy(target):
+    result = replay_trace(
+        replay_events("round_robin"),
+        mode="transparent",
+        target=target,
+        store_factory=FakeStore,
+        descriptor_reader=descriptor,
+    )
+
+    assert result["status"] == "pass"
+    assert result["target"] == target
+    assert result["operations"][0]["descriptor"]["target"] == target
+
+
 def test_direct_replay_uses_config_and_captures_failure():
     store = FakeStore(put_rc=7)
     config = object()
@@ -203,6 +218,22 @@ def test_offline_summary_rejects_missing_failed_and_mixed_runs(tmp_path):
     assert conclusion["status"] == "inconclusive"
     assert any("mixed run IDs" in error for error in conclusion["errors"])
     assert any("missing cases" in error for error in conclusion["errors"])
+
+
+def test_summary_rejects_transparent_descriptor_mismatch_with_explicit_target(
+    tmp_path,
+):
+    result = _raw_result(
+        "transparent", "transparent-remote", target="remote_nof"
+    )
+    (tmp_path / "raw-transparent-remote.json").write_text(json.dumps(result))
+
+    conclusion = summarize_results(
+        tmp_path, required_cases=["transparent-remote"]
+    )
+
+    assert conclusion["status"] == "inconclusive"
+    assert any("descriptor mismatch" in error for error in conclusion["errors"])
 
 
 def test_replay_modes_have_common_result_schema():

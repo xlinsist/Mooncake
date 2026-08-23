@@ -274,6 +274,8 @@ def replay_trace(
         raise ValueError(f"unsupported replay mode: {mode}")
     if recompute_us < 0:
         raise ValueError("recompute_us must be non-negative")
+    if target is not None and target not in ("local_nvme", "remote_nof"):
+        raise ValueError(f"unsupported replay target: {target}")
     if mode == "direct" and target not in ("local_nvme", "remote_nof"):
         raise ValueError("direct replay requires local_nvme or remote_nof target")
     if not key_prefix:
@@ -351,7 +353,7 @@ def replay_trace(
                         raise RuntimeError(f"put returned {rc}")
                     live_keys.add(key)
                     expected_target = target
-                    if mode == "transparent":
+                    if mode == "transparent" and expected_target is None:
                         expected_target = {
                             "local_only": "local_nvme",
                             "remote_only": "remote_nof",
@@ -442,9 +444,11 @@ def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, 
             raise ValueError(f"unsupported descriptor target: {target}")
         mode = result.get("mode")
         policy = operation.get("policy")
-        expected_target = result.get("target") if mode == "direct" else {
-            "local_only": "local_nvme", "remote_only": "remote_nof"
-        }.get(policy)
+        expected_target = result.get("target")
+        if mode == "transparent" and expected_target is None:
+            expected_target = {
+                "local_only": "local_nvme", "remote_only": "remote_nof"
+            }.get(policy)
         if target is not None and expected_target is not None and target != expected_target:
             raise ValueError(
                 f"descriptor mismatch for {operation.get('block_id')}: "
