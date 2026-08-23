@@ -21,3 +21,9 @@ verified transparent heterogeneous-storage deployment.
 6. [`06-runbook.md`](06-runbook.md)
    is the current maintenance and experiment execution manual, including
    baselines, registration, characterization, cleanup, and acceptance checks.
+7. [`07-kv-cache-workload-development-plan.md`](07-kv-cache-workload-development-plan.md)
+   defines the KV-cache trace model, replay modes, metrics, and hardware scope.
+8. [`08-kv-cache-workload-results.md`](08-kv-cache-workload-results.md)
+   records the offline results and current hardware blockers.
+9. [`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)
+   is the portable next-step execution plan for the two-node hardware smoke.
