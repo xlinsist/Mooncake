@@ -24,6 +24,7 @@ verified transparent heterogeneous-storage deployment.
 7. [`07-kv-cache-workload-development-plan.md`](07-kv-cache-workload-development-plan.md)
    defines the KV-cache trace model, replay modes, metrics, and hardware scope.
 8. [`08-kv-cache-workload-results.md`](08-kv-cache-workload-results.md)
-   records the offline results and current hardware blockers.
+   records the completed two-node KV-cache workload, phase-four acceptance,
+   and remote transparent-overhead distribution analysis.
 9. [`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)
    is the portable next-step execution plan for the two-node hardware smoke.

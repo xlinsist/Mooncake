@@ -1,59 +1,90 @@
-# KV-cache Workload 当前结果
+# KV-cache Workload 两节点结果
 
 ## 状态
 
-截至 2026-08-21，离线 workload 链路已验证；两节点 Store replay 尚未完成。
-
-离线结果目录为被 Git 忽略的：
+截至 2026-08-23，两节点硬件批次
+`20260823T140512Z-phase4-kv-final` 已完成。批次使用 source commit
+`255736477145236f39702f44e7a523a36914828c`，五个 KV-cache case 全部通过，
+阶段四透明层 strict gate 的八项输入也全部通过：
 
 ```text
-results/kv-workload-offline-20260820/
+transparent-acceptance.json: status=pass
+required_evidence=8
+failures=[]
 ```
 
-其中完成了 `4 block sizes × 3 reuse ratios × 3 concurrency levels = 36`
-个 deterministic trace/no-store cases。每个 case 都生成了 trace、manifest、
-raw replay JSON、CSV 汇总和 `conclusion.json`，36 个 case 均为
-`status=pass`。
+原始结果保存在被 Git 忽略的目录：
 
-## 离线结果能说明什么
+```text
+experiments/nvmeof/results/20260823T140512Z-phase4-kv-final/
+```
 
-- 固定 seed 和参数可以生成可复现的 JSONL trace；
-- `produce/reuse/evict` 生命周期和 block 依赖关系通过校验；
-- `reuse_ratio` 会反映在 request/block hit-rate 统计中；
-- no-store replay 可以生成 request latency、operation rate 和 cache 指标；
-- 汇总器会拒绝缺失 case、失败操作、混合 run ID 或 trace digest。
+其中 `RESULTS.md` 是完整的批次报告，`kv-workload/` 保存 trace、manifest、
+五个 raw replay、CSV 和 conclusion，`audit/` 保存两次补充 remote overhead
+复测。
 
-这些 latency 使用固定的 `no_store recompute` 时间模型，只是 workload
-proxy，不是模型执行时间，也不是 Mooncake 存储性能结果。
+## KV-cache workload
 
-## 两节点硬件状态
+五个 case 使用同一 trace，digest 为
+`3a49f1f79b9fdd5df28ad41190dfb5839524ef397052bae178b7f4e9b9d47051`。
+每个 Store case 都完成 148 次操作，descriptor target 全部正确；没有 miss、
+错误读取或残留对象。
 
-本次仍未形成 local/direct/transparent 的真实 Store workload 结果。2026-08-21
-只读预检证据如下：
+| Case | Operation p50 / p95 / p99 (us) | Request p50 / p95 (us) | Operations/s | Descriptor target |
+| --- | ---: | ---: | ---: | --- |
+| `direct-local` | 675.301 / 1290.221 / 10783.154 | 3622.773 / 5351.482 | 1291.048 | 148 local |
+| `transparent-local` | 519.070 / 1108.280 / 1580.541 | 3348.381 / 4856.214 | 1519.443 | 148 local |
+| `direct-remote` | 156.730 / 243.091 / 311.680 | 908.741 / 955.361 | 2572.232 | 148 remote |
+| `transparent-remote` | 157.860 / 285.810 / 381.390 | 1057.360 / 1181.170 | 2554.292 | 148 remote |
+| `no_store` | 1000.000 / 1000.000 / 1000.000 | 4000.000 / 4000.000 | 1541.667 | n/a |
 
-| 检查项 | 证据 | 结果 |
-| --- | --- | --- |
-| 本地/客户端提交同步 | local `31735b80c39954cdeca36f4d45b9bcbc5f6634c1`；客户端 `da2f5be07f1901ba1825da0caa94d65698dd2726` | **fail** |
-| 客户端远端工作树 | 11 条未提交修改/未跟踪项；未覆盖 | **blocker** |
-| Master | `10.0.0.34:50051` TCP 可连接，`ss` 显示 LISTEN | pass |
-| NoF service | `intel-bigmem`: `mooncake-nof-spdk.service` = `active` | pass |
-| `sudo -n` | 客户端本地 `sudo -n true` 返回 `sudo: a password is required` | **blocker** |
-| 远端 workload 构件 | 远端 checkout 中未发现 `kv_workload.py`；但 `build-nof`、`mooncake_master`、`nof_worker_pool_bench` 和 Python binding 存在且 binding 可导入 | **blocker**（提交不匹配且 workload 文件缺失） |
+`no_store` latency 是固定 recompute proxy，不是模型执行时间，因此不能用来
+声称 Store 比模型重计算更快。该批次只证明 workload replay、真实 Store I/O
+和 target descriptor 闭环。
 
-由于提交未同步、远端工作树 dirty、远端缺少 `kv_workload.py` 且客户端非交互 sudo 不可用，硬件写入被
-明确停止；没有伪造五个 case 的 raw JSON、CSV 或 conclusion。目标机 service
-active 和 Master 已监听不能抵消这些客户端安全门槛。
+## 阶段四透明层验收
 
-因此不能从本文件推出 local/remote 的 request-level 优劣、transparent
-收益、TTFT proxy 或两节点硬件 workload 结论。硬件阶段必须在 Master、
-匹配 Python binding、NoF 注册和非交互权限都通过预检后重新执行。
+同一批次完成 local、remote、round-robin 生命周期，local/remote unavailable
+行为，local/remote paired overhead 和五项 software verification。最终 gate
+直接检查八份 JSON，结果为 `8/8 pass`。
 
-## 下一次硬件执行入口
+正式 remote NoF overhead 使用 100 个 128 KiB 对象：
 
-下一次两节点硬件 smoke 按
-[`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)
-执行。该文档统一维护源码与构建一致性、只读预检、五个 case、停止条件和
-验收标准；本文件只记录已经产生的结果和 blocker。
+| 操作 | Direct p50 / p95 / p99 (ms) | Transparent p50 / p95 / p99 (ms) | Delta p50 / p95 / p99 |
+| --- | ---: | ---: | ---: |
+| put | 0.2432 / 0.2693 / 0.6330 | 0.2814 / 0.3058 / 0.4316 | +15.72% / +13.55% / -31.82% |
+| get | 0.3338 / 0.3457 / 0.3729 | 0.3339 / 0.3456 / 0.3665 | +0.04% / -0.03% / -1.71% |
+| remove | 0.0561 / 0.0618 / 0.0720 | 0.0564 / 0.0625 / 0.0658 | +0.46% / +1.10% / -8.67% |
 
-当前结论范围仍限制在两节点、两 SSD 拓扑；不声称多 SSD 扩展性、HA 或
-NoF 服务恢复能力。
+两次同参数补充复测均为 `status=pass`。三个 run 的 remote put p50 delta 为
+`+15.72% / +17.27% / +18.53%`，p95 delta 为
+`+13.55% / +15.08% / +23.56%`，说明透明路径的中心延迟成本可复现。三个
+direct run 的首个 put 分别达到 `32.07 / 41.10 / 37.96 ms`，使 direct p99
+和全样本吞吐失真；transparent 首个 put 为 `0.83 / 0.85 / 0.73 ms`。
+各 run 只剔除最大样本后，put mean 的三次平均为 direct `0.248 ms`、
+transparent `0.291 ms`，与 p50/p95 的约 15--18% 成本一致。
+
+remote get 的全样本带宽 delta 稳定在 `-4.75%` 到 `-5.54%`，但三个
+transparent run 各有一个 `2.12--2.30 ms` 首样本。每 run 只剔除最大样本后，
+三次 mean 平均为 direct `0.334 ms`、transparent `0.336 ms`，差约 `0.33%`；
+因此不能把全样本带宽差解释为 steady-state 回归。CPU utilization 的 paired
+delta 在 `-0.082` 到 `+0.027` 之间变号，短批次下没有一致的 CPU 退化方向。
+NoF service window 只有连接时重复出现的既有 RDMA 配置 warning，没有记录
+service restart、I/O error 或 transport failure。
+
+结论：remote `+14%` 现象在当前 128 KiB、单客户端、100-object testbed 下为
+**可接受的透明封装成本**。依据是 p50/p95 在三次测量中稳定、p99 未放大、
+robust dispersion 没有数量级变化、get/remove 中心延迟接近 direct，且没有
+一致 CPU 或 steady-state bandwidth 退化。该结论不把 cold-start outlier
+驱动的全样本吞吐当作性能收益，也不外推到其他对象大小或并发度。
+
+## 范围与后续
+
+阶段四在上述批次范围内已闭环，阶段五未启动。当前证据仍只覆盖两节点、
+两 SSD、单 workload 参数组合，不覆盖多 SSD 扩展、HA/restart、并发 sweep、
+更多 block size、长时间稳定性或与其他 KV-cache 系统的横向比较。
+
+复现实验入口和停止条件见
+[`09-kv-cache-hardware-smoke-followup.md`](09-kv-cache-hardware-smoke-followup.md)；
+透明层八证据契约见
+[`../../../docs/transparent-layer-phase4-acceptance-plan.md`](../../../docs/transparent-layer-phase4-acceptance-plan.md)。
