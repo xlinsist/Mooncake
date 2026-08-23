@@ -53,3 +53,6 @@ verified transparent heterogeneous-storage deployment.
 17. [`17-public-trace-store-results.md`](17-public-trace-store-results.md)
     records matched FAST'25 trace replay through no-store/direct/transparent
     Mooncake Store paths, generation-safe keys, paired overhead, and recovery.
+18. [`18-public-trace-store-scale-results.md`](18-public-trace-store-scale-results.md)
+    extends the matched Store replay to 500 requests per public trace and
+    records trial ranges, 100/500 scaling, and exact hardware restoration.

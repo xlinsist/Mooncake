@@ -1,0 +1,9 @@
+scenario,requests,target,trials,request_p50_overhead_pct,request_p95_overhead_pct,storage_wait_overhead_pct,event_rate_delta_pct
+conversation,100,local,3,2.472750,4.482064,4.055701,-3.897625
+conversation,500,local,3,5.409953,4.735112,5.588267,-5.292508
+conversation,100,remote,3,11.945117,11.778506,10.715047,-9.678041
+conversation,500,remote,3,11.062738,11.793168,11.250625,-10.112865
+toolagent,100,local,3,8.424473,6.937832,9.822378,-8.943877
+toolagent,500,local,3,-1.526578,-8.626854,2.490939,-2.430400
+toolagent,100,remote,3,12.078921,11.607857,9.012099,-8.267063
+toolagent,500,remote,3,3.320072,11.167041,10.329511,-9.362419

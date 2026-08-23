@@ -1,0 +1,5 @@
+scenario,requests,events,produce,reuse,evict,request_hit_rate,block_hit_rate
+conversation,100,5978,2944,90,2944,0.900000,0.029664
+conversation,500,27867,13705,457,13705,0.914000,0.032269
+toolagent,100,3524,1575,374,1575,0.810000,0.191893
+toolagent,500,17460,7695,2070,7695,0.796000,0.211982
