@@ -71,3 +71,6 @@ verified transparent heterogeneous-storage deployment.
 23. [`23-public-trace-durable-pacing-results.md`](23-public-trace-durable-pacing-results.md)
     adds real-time durable whole-path arrival debt for local ext4 and temporary
     file-backed NVMe-oF XFS, with exact target restoration evidence.
+24. [`24-testbed-inventory.md`](24-testbed-inventory.md)
+    records the paper-facing two-node hardware/software table, source commits,
+    and the boundary between same-run evidence and the post-run snapshot.
