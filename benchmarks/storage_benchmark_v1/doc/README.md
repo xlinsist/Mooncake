@@ -46,6 +46,14 @@ python benchmark.py --scenario toolagent \
 For example, `2` means 2x fast-forward and `8` means 8x fast-forward. `0`
 preserves the old unpaced behavior.
 
+Paced JSON results include a `pacing` object with the compressed scheduled
+span, processing wall time, completion lag, arrival-lag distribution, and
+maximum arrival lag. A late request runs immediately and contributes to the
+lag metrics; replay does not create extra workers to catch up. With
+`--threads 1`, these fields describe a strictly sequential trace stream and
+must not be interpreted as request-concurrency or saturation-throughput
+evidence.
+
 ### Client Threads
 
 Use `--threads` to add benchmark client worker threads:

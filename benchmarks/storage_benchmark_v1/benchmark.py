@@ -198,15 +198,42 @@ def parse_csv_floats(value: str) -> List[float]:
 
 
 def wait_for_replay_time(req: KVCacheRequest, base_timestamp: float,
-                         start_time: float, replay_scale: float):
-    if replay_scale <= 0 or req.timestamp == 0:
-        return
+                         start_time: float, replay_scale: float,
+                         clock=None, sleeper=None):
+    if replay_scale <= 0:
+        return None
+    clock = clock or time.perf_counter
+    sleeper = sleeper or time.sleep
     target_time = (start_time +
                    max(0.0, req.timestamp - base_timestamp) /
                    (1000.0 * replay_scale))
-    delay = target_time - time.perf_counter()
+    delay = target_time - clock()
     if delay > 0:
-        time.sleep(delay)
+        sleeper(delay)
+    return max(0.0, (clock() - target_time) * 1000.0)
+
+
+def pacing_stats(requests: List[KVCacheRequest], replay_scale: float,
+                 elapsed: float, arrival_lags_ms: List[float]) -> Dict[str, Any]:
+    if replay_scale <= 0 or not requests:
+        return {
+            'enabled': False,
+            'replay_scale': replay_scale,
+            'source_timestamp_unit': 'milliseconds',
+        }
+    scheduled_span = max(
+        0.0, requests[-1].timestamp - requests[0].timestamp
+    ) / (1000.0 * replay_scale)
+    return {
+        'enabled': True,
+        'replay_scale': replay_scale,
+        'source_timestamp_unit': 'milliseconds',
+        'scheduled_span_s': scheduled_span,
+        'processing_wall_s': elapsed,
+        'completion_lag_s': max(0.0, elapsed - scheduled_span),
+        'arrival_lag_ms': latency_stats(arrival_lags_ms),
+        'arrival_lag_max_ms': max(arrival_lags_ms) if arrival_lags_ms else 0.0,
+    }
 
 
 def latency_stats(values: List[float]) -> Dict[str, float]:
@@ -357,19 +384,28 @@ def run_single_thread(benchmark: StorageBenchmark,
     start_time = time.perf_counter()
     base_timestamp = requests[0].timestamp if requests else 0
     completed = 0
+    arrival_lags_ms = []
 
     for req in requests:
-        wait_for_replay_time(req, base_timestamp, start_time, replay_scale)
+        arrival_lag_ms = wait_for_replay_time(
+            req, base_timestamp, start_time, replay_scale
+        )
+        if arrival_lag_ms is not None:
+            arrival_lags_ms.append(arrival_lag_ms)
         benchmark.process_request(req)
         completed += 1
         if should_print_progress(completed, len(requests), progress_interval):
             print_progress(completed, len(requests), start_time,
                            benchmark.get_stats(), req)
 
+    elapsed = time.perf_counter() - start_time
     return {
         'completed': completed,
-        'elapsed': time.perf_counter() - start_time,
+        'elapsed': elapsed,
         'stats': benchmark.get_stats(),
+        'pacing': pacing_stats(
+            requests, replay_scale, elapsed, arrival_lags_ms
+        ),
     }
 
 
@@ -383,10 +419,17 @@ def run_multi_thread(benchmarks: List[StorageBenchmark],
 
     def run_worker(thread_id: int):
         benchmark = benchmarks[thread_id]
+        arrival_lags_ms = []
         for req in requests:
-            wait_for_replay_time(req, base_timestamp, start_time, replay_scale)
+            arrival_lag_ms = wait_for_replay_time(
+                req, base_timestamp, start_time, replay_scale
+            )
+            if arrival_lag_ms is not None:
+                arrival_lags_ms.append(arrival_lag_ms)
             benchmark.process_request(req)
-        return snapshot_thread_stats(benchmark)
+        stats = snapshot_thread_stats(benchmark)
+        stats['arrival_lags_ms'] = arrival_lags_ms
+        return stats
 
     thread_stats = []
     with ThreadPoolExecutor(max_workers=len(benchmarks)) as executor:
@@ -402,10 +445,19 @@ def run_multi_thread(benchmarks: List[StorageBenchmark],
                            aggregate_thread_stats(thread_stats),
                            suffix=" | completed worker")
 
+    elapsed = time.perf_counter() - start_time
+    arrival_lags_ms = [
+        lag
+        for stats in thread_stats
+        for lag in stats.get('arrival_lags_ms', [])
+    ]
     return {
         'completed': completed,
-        'elapsed': time.perf_counter() - start_time,
+        'elapsed': elapsed,
         'stats': aggregate_thread_stats(thread_stats),
+        'pacing': pacing_stats(
+            requests, replay_scale, elapsed, arrival_lags_ms
+        ),
     }
 
 
@@ -541,6 +593,7 @@ def run_benchmark(trace_path: str, storage_dir: str, model_config: dict,
             'fsync_mode': fsync_mode,
             'threads': threads,
             'replay_scale': replay_scale,
+            'pacing': result.get('pacing', {}),
             **result['stats'],
         }])
         sys.exit(0)
@@ -556,6 +609,7 @@ def run_benchmark(trace_path: str, storage_dir: str, model_config: dict,
         'fsync_mode': fsync_mode,
         'threads': threads,
         'replay_scale': replay_scale,
+        'pacing': result.get('pacing', {}),
         **result['stats'],
     }
 
@@ -586,6 +640,14 @@ def format_storage_stats(stats: Dict, title: str = "Storage"):
     output.append(f"  Total I/O Time:    {stats.get('io_time_s', 0):.3f} s")
     output.append(f"  QPS:              {stats.get('requests_per_second', 0):.2f}")
     output.append(f"  Hit Rate:         {stats.get('page_hit_rate', 0):.2%}")
+    pacing = stats.get('pacing', {})
+    if pacing.get('enabled'):
+        output.append(f"  Scheduled Span:   {pacing.get('scheduled_span_s', 0):.3f} s")
+        output.append(f"  Completion Lag:   {pacing.get('completion_lag_s', 0):.3f} s")
+        output.append(
+            f"  Arrival Lag P95:  "
+            f"{pacing.get('arrival_lag_ms', {}).get('p95_ms', 0):.3f} ms"
+        )
 
     # Request Stats
     output.append(f"\n[Request Wall Latency]")
