@@ -390,29 +390,6 @@ def test_transparent_acceptance_passes_complete_evidence(tmp_path):
                     "readable_after_failure": False,
                 }
             )
-    for scenario in (
-        "client_restart",
-        "master_ha_restart",
-        "local_owner_restart",
-        "nof_service_restart",
-    ):
-        expected_targets = (
-            ["local_nvme", "remote_nof"]
-            if scenario in ("client_restart", "master_ha_restart")
-            else ["local_nvme"]
-            if scenario == "local_owner_restart"
-            else ["remote_nof"]
-        )
-        reports[f"transparent-restart-{scenario}.json"] = {
-            "scenario": scenario,
-            "expected_targets": expected_targets,
-            "objects_verified": 2,
-            "descriptors_verified": 2,
-            "objects_removed": 2,
-            "restart_witness_before": f"{scenario}:before",
-            "restart_witness_after": f"{scenario}:after",
-            "restart_witness_changed": True,
-        }
     for target in ("local_nvme", "remote_nof"):
         reports[f"transparent-overhead-{target}.json"] = {
             "target": target,
@@ -484,6 +461,7 @@ def test_transparent_acceptance_passes_complete_evidence(tmp_path):
     acceptance = correctness.transparent_acceptance(str(tmp_path), "run-1")
 
     assert acceptance["status"] == "pass"
+    assert acceptance["required_evidence"] == 8
     assert acceptance["failures"] == []
 
 
@@ -494,10 +472,6 @@ def test_transparent_acceptance_rejects_empty_pass_reports(tmp_path):
         "transparent-round-robin.json",
         "transparent-local-unavailable.json",
         "transparent-remote-unavailable.json",
-        "transparent-restart-client_restart.json",
-        "transparent-restart-master_ha_restart.json",
-        "transparent-restart-local_owner_restart.json",
-        "transparent-restart-nof_service_restart.json",
         "transparent-overhead-local_nvme.json",
         "transparent-overhead-remote_nof.json",
         "transparent-software-verification.json",

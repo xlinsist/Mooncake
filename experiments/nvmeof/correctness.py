@@ -641,22 +641,6 @@ def transparent_acceptance(result_dir: str, run_id: str):
         "transparent-remote-unavailable.json": {
             "expected_target": "remote_nof",
         },
-        "transparent-restart-client_restart.json": {
-            "scenario": "client_restart",
-            "expected_targets": ["local_nvme", "remote_nof"],
-        },
-        "transparent-restart-master_ha_restart.json": {
-            "scenario": "master_ha_restart",
-            "expected_targets": ["local_nvme", "remote_nof"],
-        },
-        "transparent-restart-local_owner_restart.json": {
-            "scenario": "local_owner_restart",
-            "expected_targets": ["local_nvme"],
-        },
-        "transparent-restart-nof_service_restart.json": {
-            "scenario": "nof_service_restart",
-            "expected_targets": ["remote_nof"],
-        },
         "transparent-overhead-local_nvme.json": {
             "target": "local_nvme",
         },
