@@ -121,8 +121,12 @@ def test_transparent_replay_records_and_revalidates_actual_descriptor():
         "remove",
     ]
     assert result["operations"][0]["descriptor"]["target"] == "remote_nof"
-    assert result["operations"][1]["descriptor"] == result["operations"][0]["descriptor"]
-    assert result["operations"][2]["descriptor"] == result["operations"][0]["descriptor"]
+    assert (
+        result["operations"][1]["descriptor"] == result["operations"][0]["descriptor"]
+    )
+    assert (
+        result["operations"][2]["descriptor"] == result["operations"][0]["descriptor"]
+    )
     assert all(
         operation["target_policy"] == "round_robin"
         for operation in result["operations"]
@@ -186,8 +190,14 @@ def _raw_result(mode, case_id, run_id="run-1", target=None, status="pass", error
                 "request_id": event.request_id,
                 "block_id": event.block_id,
                 "operation": event.operation,
-                "store_operation": {"produce": "put", "reuse": "get", "evict": "remove"}[event.operation],
-                "descriptor": {"target": "local_nvme", "object_size": 4096} if mode != "no_store" else None,
+                "store_operation": {
+                    "produce": "put",
+                    "reuse": "get",
+                    "evict": "remove",
+                }[event.operation],
+                "descriptor": {"target": "local_nvme", "object_size": 4096}
+                if mode != "no_store"
+                else None,
                 "latency_us": latency,
                 "return_code": 0,
             }
@@ -200,7 +210,9 @@ def test_offline_summary_writes_layout_and_metrics(tmp_path):
     (tmp_path / "manifest.json").write_text(
         json.dumps({"run_id": "run-1", "required_cases": ["direct"]})
     )
-    (tmp_path / "raw-direct.json").write_text(json.dumps(_raw_result("direct", "direct", target="local_nvme")))
+    (tmp_path / "raw-direct.json").write_text(
+        json.dumps(_raw_result("direct", "direct", target="local_nvme"))
+    )
     conclusion = summarize_results(tmp_path)
     assert conclusion["status"] == "pass"
     assert conclusion["cases"][0]["p50_latency_us"] == 20.0
@@ -211,11 +223,21 @@ def test_offline_summary_writes_layout_and_metrics(tmp_path):
     assert conclusion["cases"][0]["storage_wait_us"] == 60.0
     assert (tmp_path / "operations.csv").exists()
     assert (tmp_path / "summary.csv").exists()
+    assert b"\r\n" not in (tmp_path / "operations.csv").read_bytes()
+    assert b"\r\n" not in (tmp_path / "summary.csv").read_bytes()
 
 
 def test_offline_summary_rejects_missing_failed_and_mixed_runs(tmp_path):
-    (tmp_path / "raw-a.json").write_text(json.dumps(_raw_result("no_store", "a", run_id="one")))
-    (tmp_path / "raw-b.json").write_text(json.dumps(_raw_result("no_store", "b", run_id="two", status="fail", errors=[{"error": "boom"}])))
+    (tmp_path / "raw-a.json").write_text(
+        json.dumps(_raw_result("no_store", "a", run_id="one"))
+    )
+    (tmp_path / "raw-b.json").write_text(
+        json.dumps(
+            _raw_result(
+                "no_store", "b", run_id="two", status="fail", errors=[{"error": "boom"}]
+            )
+        )
+    )
     conclusion = summarize_results(tmp_path, required_cases=["a", "b", "c"])
     assert conclusion["status"] == "inconclusive"
     assert any("mixed run IDs" in error for error in conclusion["errors"])
@@ -225,14 +247,10 @@ def test_offline_summary_rejects_missing_failed_and_mixed_runs(tmp_path):
 def test_summary_rejects_transparent_descriptor_mismatch_with_explicit_target(
     tmp_path,
 ):
-    result = _raw_result(
-        "transparent", "transparent-remote", target="remote_nof"
-    )
+    result = _raw_result("transparent", "transparent-remote", target="remote_nof")
     (tmp_path / "raw-transparent-remote.json").write_text(json.dumps(result))
 
-    conclusion = summarize_results(
-        tmp_path, required_cases=["transparent-remote"]
-    )
+    conclusion = summarize_results(tmp_path, required_cases=["transparent-remote"])
 
     assert conclusion["status"] == "inconclusive"
     assert any("descriptor mismatch" in error for error in conclusion["errors"])
@@ -240,7 +258,13 @@ def test_summary_rejects_transparent_descriptor_mismatch_with_explicit_target(
 
 def test_replay_modes_have_common_result_schema():
     no_store = replay_trace(replay_events(), mode="no_store")
-    assert {"schema_version", "status", "mode", "operations", "errors"} <= no_store.keys()
+    assert {
+        "schema_version",
+        "status",
+        "mode",
+        "operations",
+        "errors",
+    } <= no_store.keys()
     assert no_store["mode"] == "no_store"
 
 

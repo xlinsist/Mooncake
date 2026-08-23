@@ -161,3 +161,33 @@ source counts are kept separate for `local_nvme` and `remote_nof`; they are not
 inferred from policy. This workflow reports synthetic/request-level proxy
 metrics only and does not claim model execution, HA behavior, or cluster-scale
 results.
+
+FAST'25 public traces can be converted into the same replay schema before
+running the existing Store workflow. The converter reads each request's
+`hash_ids`, treats a resident page as `reuse`, an absent page as `produce`, and
+uses deterministic LRU eviction at the configured page capacity. It appends a
+final cleanup eviction for every resident page and records both source and
+converted-trace SHA-256 digests in the manifest:
+
+```bash
+python3 public_trace_workload.py /path/to/conversation.jsonl \
+  results/public-trace/conversation \
+  --requests 100 --capacity-pages 64 --block-size 131072 \
+  --run-id conversation-100
+
+KV_WORKLOAD_MODE=no_store \
+KV_WORKLOAD_RESULT_DIR=results/public-trace/conversation \
+  ./run.sh kv-workload-replay
+KV_WORKLOAD_MODE=direct KV_WORKLOAD_TARGET=remote_nof \
+KV_WORKLOAD_CASE_ID=direct-remote \
+KV_WORKLOAD_RESULT_DIR=results/public-trace/conversation \
+  ./run.sh kv-workload-replay
+```
+
+The adapter requires exactly the requested number of valid input rows and is
+sequential: timestamps preserve deterministic event order but do not drive
+arrival timing or concurrency. The fixed block size is a page-size model, not
+a reconstruction of the trace's original byte volume. Direct and transparent
+placement are selected during replay; the converted trace keeps
+`policy=round_robin` so one digest can be used for matched local and remote
+cases.

@@ -73,7 +73,9 @@ def validate_trace(events: Iterable[TraceEvent]) -> list[TraceEvent]:
             raise ValueError(f"block size changed for {event.block_id}")
         if event.operation == "produce":
             if event.block_id in produced and event.block_id not in evicted:
-                raise ValueError(f"block produced twice without eviction: {event.block_id}")
+                raise ValueError(
+                    f"block produced twice without eviction: {event.block_id}"
+                )
             produced.add(event.block_id)
             evicted.discard(event.block_id)
         elif event.operation in ("reuse", "evict"):
@@ -84,7 +86,9 @@ def validate_trace(events: Iterable[TraceEvent]) -> list[TraceEvent]:
             if event.operation == "evict":
                 evicted.add(event.block_id)
         elif event.operation == "miss" and event.block_id in evicted:
-            raise ValueError(f"miss cannot reference an evicted block: {event.block_id}")
+            raise ValueError(
+                f"miss cannot reference an evicted block: {event.block_id}"
+            )
     return materialized
 
 
@@ -101,7 +105,9 @@ def generate_trace(
     """Generate a deterministic request trace with shared-prefix reuse."""
 
     if requests <= 0 or blocks_per_request <= 0 or concurrency <= 0:
-        raise ValueError("requests, blocks_per_request, and concurrency must be positive")
+        raise ValueError(
+            "requests, blocks_per_request, and concurrency must be positive"
+        )
     if not 0 <= reuse_ratio <= 1:
         raise ValueError("reuse_ratio must be between 0 and 1")
     if block_size <= 0:
@@ -174,7 +180,9 @@ def write_trace(path: str | Path, events: Iterable[TraceEvent]) -> str:
 
 def read_trace(path: str | Path) -> list[TraceEvent]:
     events = []
-    for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(
+        Path(path).read_text(encoding="utf-8").splitlines(), 1
+    ):
         if not line.strip():
             raise ValueError(f"blank trace line at {line_number}")
         try:
@@ -228,7 +236,9 @@ def _direct_config(target: str) -> Any:
     return config
 
 
-def _descriptor_for(store: Any, key: str, expected_target: str | None) -> dict[str, Any]:
+def _descriptor_for(
+    store: Any, key: str, expected_target: str | None
+) -> dict[str, Any]:
     from correctness import descriptor_fingerprint
 
     if expected_target is not None:
@@ -447,9 +457,14 @@ def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, 
         expected_target = result.get("target")
         if mode == "transparent" and expected_target is None:
             expected_target = {
-                "local_only": "local_nvme", "remote_only": "remote_nof"
+                "local_only": "local_nvme",
+                "remote_only": "remote_nof",
             }.get(policy)
-        if target is not None and expected_target is not None and target != expected_target:
+        if (
+            target is not None
+            and expected_target is not None
+            and target != expected_target
+        ):
             raise ValueError(
                 f"descriptor mismatch for {operation.get('block_id')}: "
                 f"{target} != {expected_target}"
@@ -484,7 +499,11 @@ def summarize_results(
 
     output = Path(result_dir)
     manifest_path = output / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.exists()
+        else {}
+    )
     raw_paths = sorted(output.glob("raw-*.json"))
     required = set(required_cases or manifest.get("required_cases", []))
     seen_cases: set[str] = set()
@@ -509,15 +528,27 @@ def summarize_results(
             latencies = [row["latency_us"] for row in rows]
             request_rows: dict[str, list[dict[str, Any]]] = {}
             for row in rows:
-                if row["request_id"] != "cleanup" and not row["request_id"].endswith("-cleanup"):
+                if row["request_id"] != "cleanup" and not row["request_id"].endswith(
+                    "-cleanup"
+                ):
                     request_rows.setdefault(row["request_id"], []).append(row)
-            request_latencies = [sum(row["latency_us"] for row in group) for group in request_rows.values()]
+            request_latencies = [
+                sum(row["latency_us"] for row in group)
+                for group in request_rows.values()
+            ]
             request_count = len(request_rows)
-            hit_requests = sum(any(row["operation"] == "reuse" for row in group) for group in request_rows.values())
+            hit_requests = sum(
+                any(row["operation"] == "reuse" for row in group)
+                for group in request_rows.values()
+            )
             blocks_seen = sum(row["operation"] in ("produce", "reuse") for row in rows)
             block_hits = sum(row["operation"] == "reuse" for row in rows)
             misses = sum(row["operation"] == "miss" for row in rows)
-            storage_rows = [row for row in rows if row["store_operation"] in ("put", "get", "remove")]
+            storage_rows = [
+                row
+                for row in rows
+                if row["store_operation"] in ("put", "get", "remove")
+            ]
             storage_wait = sum(row["latency_us"] for row in storage_rows)
             case_summaries.append(
                 {
@@ -532,8 +563,12 @@ def summarize_results(
                     if sum(latencies) > 0
                     else None,
                     "request_count": request_count,
-                    "request_hit_rate": round(hit_requests / request_count, 6) if request_count else None,
-                    "block_hit_rate": round(block_hits / blocks_seen, 6) if blocks_seen else None,
+                    "request_hit_rate": round(hit_requests / request_count, 6)
+                    if request_count
+                    else None,
+                    "block_hit_rate": round(block_hits / blocks_seen, 6)
+                    if blocks_seen
+                    else None,
                     "miss_rate": round(misses / len(rows), 6) if rows else None,
                     "request_p50_latency_us": _percentile(request_latencies, 50),
                     "request_p95_latency_us": _percentile(request_latencies, 95),
@@ -543,8 +578,12 @@ def summarize_results(
                     "reuse": sum(row["operation"] == "reuse" for row in rows),
                     "evict": sum(row["operation"] == "evict" for row in rows),
                     "miss": sum(row["operation"] == "miss" for row in rows),
-                    "local": sum(row["descriptor_target"] == "local_nvme" for row in rows),
-                    "remote": sum(row["descriptor_target"] == "remote_nof" for row in rows),
+                    "local": sum(
+                        row["descriptor_target"] == "local_nvme" for row in rows
+                    ),
+                    "remote": sum(
+                        row["descriptor_target"] == "remote_nof" for row in rows
+                    ),
                 }
             )
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -561,22 +600,49 @@ def summarize_results(
 
     output.mkdir(parents=True, exist_ok=True)
     operation_fields = [
-        "case_id", "mode", "target", "request_id", "block_id", "operation",
-        "store_operation", "descriptor_target", "latency_us", "return_code",
+        "case_id",
+        "mode",
+        "target",
+        "request_id",
+        "block_id",
+        "operation",
+        "store_operation",
+        "descriptor_target",
+        "latency_us",
+        "return_code",
     ]
     with (output / "operations.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=operation_fields)
+        writer = csv.DictWriter(
+            stream, fieldnames=operation_fields, lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(all_rows)
     summary_fields = [
-        "case_id", "mode", "target", "operations", "p50_latency_us",
-        "p95_latency_us", "p99_latency_us", "operation_rate", "produce", "reuse",
-        "evict", "miss", "request_count", "request_hit_rate", "block_hit_rate",
-        "miss_rate", "request_p50_latency_us", "request_p95_latency_us",
-        "storage_wait_us", "cpu_utilization_pct", "local", "remote",
+        "case_id",
+        "mode",
+        "target",
+        "operations",
+        "p50_latency_us",
+        "p95_latency_us",
+        "p99_latency_us",
+        "operation_rate",
+        "produce",
+        "reuse",
+        "evict",
+        "miss",
+        "request_count",
+        "request_hit_rate",
+        "block_hit_rate",
+        "miss_rate",
+        "request_p50_latency_us",
+        "request_p95_latency_us",
+        "storage_wait_us",
+        "cpu_utilization_pct",
+        "local",
+        "remote",
     ]
     with (output / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=summary_fields)
+        writer = csv.DictWriter(stream, fieldnames=summary_fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(case_summaries)
     conclusion = {
@@ -597,32 +663,55 @@ def summarize_results(
     return conclusion
 
 
-def _write_manifest(path: Path, events: list[TraceEvent], parameters: dict[str, Any], seed: int, run_id: str | None) -> dict[str, Any]:
+def _write_manifest(
+    path: Path,
+    events: list[TraceEvent],
+    parameters: dict[str, Any],
+    seed: int,
+    run_id: str | None,
+) -> dict[str, Any]:
     manifest = manifest_for(events, seed=seed, parameters=parameters)
     if run_id is not None:
         manifest["run_id"] = run_id
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return manifest
 
 
 def _generate_command(args: argparse.Namespace) -> int:
     output = Path(args.output)
     parameters = {
-        "requests": args.requests, "blocks_per_request": args.blocks_per_request,
-        "block_size": args.block_size, "reuse_ratio": args.reuse_ratio,
-        "concurrency": args.concurrency, "policy": args.policy,
+        "requests": args.requests,
+        "blocks_per_request": args.blocks_per_request,
+        "block_size": args.block_size,
+        "reuse_ratio": args.reuse_ratio,
+        "concurrency": args.concurrency,
+        "policy": args.policy,
     }
     events = generate_trace(seed=args.seed, **parameters)
     digest = write_trace(output / "trace.jsonl", events)
-    _write_manifest(output / "manifest.json", events, parameters, args.seed, args.run_id)
-    print(json.dumps({"events": len(events), "trace_sha256": digest, "manifest": str(output / "manifest.json")}))
+    _write_manifest(
+        output / "manifest.json", events, parameters, args.seed, args.run_id
+    )
+    print(
+        json.dumps(
+            {
+                "events": len(events),
+                "trace_sha256": digest,
+                "manifest": str(output / "manifest.json"),
+            }
+        )
+    )
     return 0
 
 
 def _replay_command(args: argparse.Namespace) -> int:
     output = Path(args.output)
     events = read_trace(args.trace)
-    manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else {}
+    manifest = (
+        json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else {}
+    )
     run_id = args.run_id or manifest.get("run_id")
     key_prefix = f"kv-workload-{run_id or 'unscoped'}-{args.case_id}"
     result = replay_trace(
@@ -632,9 +721,17 @@ def _replay_command(args: argparse.Namespace) -> int:
         key_prefix=key_prefix,
         recompute_us=args.recompute_us,
     )
-    result.update({"case_id": args.case_id, "run_id": run_id, "trace_sha256": manifest.get("trace_sha256")})
+    result.update(
+        {
+            "case_id": args.case_id,
+            "run_id": run_id,
+            "trace_sha256": manifest.get("trace_sha256"),
+        }
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return 0 if result["status"] == "pass" else 1
 
 
@@ -655,7 +752,9 @@ def _main() -> int:
         command.add_argument("--block-size", type=int, default=131072)
         command.add_argument("--reuse-ratio", type=float, default=0.5)
         command.add_argument("--concurrency", type=int, default=1)
-        command.add_argument("--policy", choices=sorted(POLICIES), default="round_robin")
+        command.add_argument(
+            "--policy", choices=sorted(POLICIES), default="round_robin"
+        )
         command.add_argument("--seed", type=int, default=0)
         command.add_argument("--run-id")
 
