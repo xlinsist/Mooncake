@@ -1,0 +1,11 @@
+scenario,case_id,mode,target,trials,median_operations,median_p50_latency_us,median_p95_latency_us,median_p99_latency_us,median_operation_rate,median_produce,median_reuse,median_evict,median_request_count,median_request_hit_rate,median_block_hit_rate,median_request_p50_latency_us,median_request_p95_latency_us,median_storage_wait_us,median_local,median_remote
+conversation,direct-local,direct,local_nvme,3,5978.0,624.93,1005.76,1087.031,2100.098745,2944.0,90.0,2944.0,100.0,0.9,0.029664,19391.81,73801.234,2846532.818,5978.0,0.0
+conversation,direct-remote,direct,remote_nof,3,5978.0,165.57,240.17,248.48,6437.07494,2944.0,90.0,2944.0,100.0,0.9,0.029664,6154.167,26555.992,928682.679,0.0,5978.0
+conversation,no_store,no_store,,3,5978.0,1000.0,1000.0,1000.0,1970.33619,2944.0,90.0,2944.0,100.0,0.9,0.029664,21000.0,84000.0,0.0,0.0,0.0
+conversation,transparent-local,transparent,local_nvme,3,5978.0,645.0,1037.46,1141.66,1996.207352,2944.0,90.0,2944.0,100.0,0.9,0.029664,19871.321,78715.409,2994678.882,5978.0,0.0
+conversation,transparent-remote,transparent,remote_nof,3,5978.0,166.14,276.93,289.92,5834.943876,2944.0,90.0,2944.0,100.0,0.9,0.029664,6834.601,29790.123,1024517.138,0.0,5978.0
+toolagent,direct-local,direct,local_nvme,3,3524.0,517.52,997.511,1083.54,2076.518427,1575.0,374.0,1575.0,100.0,0.81,0.191893,8948.916,47546.261,1697071.384,3524.0,0.0
+toolagent,direct-remote,direct,remote_nof,3,3524.0,162.17,239.76,249.43,6210.495613,1575.0,374.0,1575.0,100.0,0.81,0.191893,2595.473,15631.069,567426.534,0.0,3524.0
+toolagent,no_store,no_store,,3,3524.0,1000.0,1000.0,1000.0,1808.106721,1575.0,374.0,1575.0,100.0,0.81,0.191893,13000.0,52000.0,0.0,0.0,0.0
+toolagent,transparent-local,transparent,local_nvme,3,3524.0,523.891,1075.41,1169.571,1885.904962,1575.0,374.0,1575.0,100.0,0.81,0.191893,9587.955,50832.439,1868598.933,3524.0,0.0
+toolagent,transparent-remote,transparent,remote_nof,3,3524.0,161.471,275.06,286.22,5697.070013,1575.0,374.0,1575.0,100.0,0.81,0.191893,2906.982,17414.204,618563.576,0.0,3524.0

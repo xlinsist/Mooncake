@@ -190,4 +190,6 @@ arrival timing or concurrency. The fixed block size is a page-size model, not
 a reconstruction of the trace's original byte volume. Direct and transparent
 placement are selected during replay; the converted trace keeps
 `policy=round_robin` so one digest can be used for matched local and remote
-cases.
+cases. If a page is evicted and later produced again, replay assigns a new
+generation-suffixed Store key so delayed backend cleanup cannot collide with
+the prior page lifetime.

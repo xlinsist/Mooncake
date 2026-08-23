@@ -50,3 +50,6 @@ verified transparent heterogeneous-storage deployment.
 16. [`16-public-trace-scale-results.md`](16-public-trace-scale-results.md)
     records the durable conversation/toolagent 20/50/100-request scale matrix,
     whole-path distributions, strict sync counts, and exact target restoration.
+17. [`17-public-trace-store-results.md`](17-public-trace-store-results.md)
+    records matched FAST'25 trace replay through no-store/direct/transparent
+    Mooncake Store paths, generation-safe keys, paired overhead, and recovery.
