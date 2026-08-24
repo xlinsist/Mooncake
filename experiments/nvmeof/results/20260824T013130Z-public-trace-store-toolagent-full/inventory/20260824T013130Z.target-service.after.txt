@@ -1,0 +1,8 @@
+CheckedUTC=2026-08-24T02:40:14Z
+Hostname=intel-bigmem-nvm-stratix
+MainPID=2072748
+ActiveState=active
+SubState=running
+Process=2072748 /sharenvme/userhome/zhouxl/mooncake-nof-phase1/spdk/build/bin/nvmf_tgt -m 0xff --wait-for-rpc
+MatchingNQNCount=1
+NQN=nqn.2026-08.local.mooncake:nof-phase1

@@ -1,0 +1,37 @@
+{
+  "block_size": 131072,
+  "capacity_pages": 64,
+  "cell_conclusions": 3,
+  "cell_errors": [],
+  "claim_boundary": "Sequential full FAST'25 hash-id replay through Mooncake Store with replay_scale=0 and preserve_arrivals=false; no true concurrency, model serving, transport-only, saturation, or system-superiority claim.",
+  "client_nvme_inventory_equal": true,
+  "compact_sample_limit": 128,
+  "errors": [],
+  "event_count_per_case": 710336,
+  "final_recovery_errors": [],
+  "final_recovery_status": "pass",
+  "nonzero_case_rcs": [],
+  "observed_cases": 15,
+  "planned_cases": 15,
+  "raw_errors": [],
+  "raw_json_bytes": 1826488,
+  "replay_scale": 0,
+  "requests": 23608,
+  "run_id": "20260824T013130Z",
+  "scenario": "toolagent",
+  "source_digests": {
+    "toolagent": [
+      "48a2db1a13d3bc05e6330140c64f604ba366df20d3c9e128b5c35a01c1fa5f71"
+    ]
+  },
+  "status": "pass",
+  "store_gets": 1306752,
+  "store_payload_bytes_put_plus_get": 644270260224,
+  "store_puts": 3608640,
+  "store_removes": 3608640,
+  "trace_digests": {
+    "toolagent": [
+      "d55b60a3bfd0c0fa52192798ec43bf5652b1cf4bd7bf6d25f8690bb65c28d607"
+    ]
+  }
+}
