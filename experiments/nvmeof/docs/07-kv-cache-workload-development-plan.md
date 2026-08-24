@@ -181,6 +181,42 @@ results/<run-id>/kv-workload/
 缺失重复、descriptor 不匹配、trace 版本不一致或混用 run ID 时必须为
 `inconclusive`。
 
+#### Compact evidence 合约
+
+完整公开 trace 可能包含数万次操作。为避免 raw JSON 和归档随事件数线性
+膨胀，replay 提供显式 opt-in 的 compact evidence 模式：
+
+```bash
+python3 kv_workload.py replay TRACE OUTPUT \
+  --mode MODE --case-id CASE \
+  --compact-evidence --compact-sample-limit 128
+```
+
+通过 `run.sh kv-workload-replay` 执行时，设置
+`KV_WORKLOAD_COMPACT_EVIDENCE=1`；可用
+`KV_WORKLOAD_COMPACT_SAMPLE_LIMIT` 调整样本上限。默认模式保持原有完整
+`operations` 数组，不改变既有 raw result 合约。
+
+Compact raw result 不保存完整 `operations`，而保存：
+
+- 全量事件计算出的精确 operation/request 计数、命中率、p50/p95/p99、
+  operation rate、storage wait 和 pacing 指标；
+- 全量 descriptor target/policy 计数、descriptor proof digest、内容校验数、
+  mismatch/return-code/error 计数；
+- 最多 `compact_sample_limit` 条由稳定 SHA-256 排名选出的完整操作样本，
+  以及样本和 summary 的完整性 digest；
+- 有上限的失败记录和独立的精确错误总数。
+
+离线汇总必须交叉校验 event/operation/store/descriptor/request 计数、policy
+与实际 target、内容和返回码 gate、summary digest、样本 digest 及 metric
+取值范围。任何缺字段、计数不一致、未知 evidence mode、descriptor/content
+mismatch 或 manifest provenance 不一致都必须产生 `inconclusive`。
+
+Compact case 的 `summary.csv` 和 `conclusion.json` 使用全量事件的精确聚合，
+不允许从样本重新计算。`operations.csv` 对 compact case **只包含抽样审计行**；
+这些行不能被解释为完整操作总体。抽样只影响审计行数量，不影响指标、分母、
+descriptor/content 正确性 gate 或 case 状态。
+
 ### Step 4：编写 workload 单测与离线汇总测试
 
 新增 `test_kv_workload.py`，覆盖：

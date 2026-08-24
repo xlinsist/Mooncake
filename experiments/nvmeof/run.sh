@@ -73,6 +73,9 @@ kv_workload_replay() {
   [[ -f "$manifest" ]] && args+=(--manifest "$manifest")
   [[ -n $target ]] && args+=(--target "$target")
   [[ -n $run_id ]] && args+=(--run-id "$run_id")
+  if [[ ${KV_WORKLOAD_COMPACT_EVIDENCE:-0} == 1 ]]; then
+    args+=(--compact-evidence --compact-sample-limit "${KV_WORKLOAD_COMPACT_SAMPLE_LIMIT:-128}")
+  fi
   if [[ $mode == no_store ]]; then
     python3 "${args[@]}"
   else

@@ -1,5 +1,8 @@
+import csv
+import hashlib
 import json
 from argparse import Namespace
+from copy import deepcopy
 
 import pytest
 
@@ -260,6 +263,255 @@ def test_direct_replay_uses_config_and_captures_failure():
     assert store.closed
 
 
+def test_compact_replay_omits_full_operations_and_preserves_exact_evidence():
+    ticks = iter((0, 10_000, 20_000, 32_000, 40_000, 45_000))
+    result = replay_trace(
+        replay_events(),
+        mode="transparent",
+        target="local_nvme",
+        store_factory=FakeStore,
+        descriptor_reader=descriptor,
+        clock_ns=lambda: next(ticks),
+        compact_evidence=True,
+        compact_sample_limit=2,
+    )
+
+    assert result["status"] == "pass"
+    assert result["evidence_mode"] == "compact"
+    assert "operations" not in result
+    assert result["evidence"]["operation_count"] == result["event_count"] == 3
+    assert len(result["evidence"]["samples"]) == 2
+    assert result["evidence"]["content_checks"] == 1
+    assert result["evidence"]["content_mismatches"] == 0
+    assert result["evidence"]["descriptor_checks"] == 3
+    assert result["evidence"]["descriptor_target_counts"] == {
+        "local_nvme": 3,
+        "remote_nof": 0,
+    }
+
+
+def test_compact_summary_matches_legacy_summary_and_writes_only_samples(tmp_path):
+    def run(compact_evidence):
+        ticks = iter((0, 10_000, 20_000, 32_000, 40_000, 45_000))
+        result = replay_trace(
+            replay_events(),
+            mode="transparent",
+            target="local_nvme",
+            store_factory=FakeStore,
+            descriptor_reader=descriptor,
+            clock_ns=lambda: next(ticks),
+            compact_evidence=compact_evidence,
+            compact_sample_limit=2,
+        )
+        result.update(
+            {"case_id": "case", "run_id": "run-1", "trace_sha256": "trace-1"}
+        )
+        return result
+
+    legacy_dir = tmp_path / "legacy"
+    compact_dir = tmp_path / "compact"
+    legacy_dir.mkdir()
+    compact_dir.mkdir()
+    (legacy_dir / "raw-case.json").write_text(json.dumps(run(False)))
+    (compact_dir / "raw-case.json").write_text(json.dumps(run(True)))
+
+    legacy = summarize_results(legacy_dir, required_cases=["case"])
+    compact = summarize_results(compact_dir, required_cases=["case"])
+
+    assert compact["status"] == "pass"
+    assert compact["cases"] == legacy["cases"]
+    with (compact_dir / "operations.csv").open(newline="") as stream:
+        assert len(list(csv.DictReader(stream))) == 2
+    assert compact["cases"][0]["operations"] == 3
+
+
+def test_compact_sampling_is_deterministic_and_output_is_bounded():
+    events = generate_trace(
+        requests=1_000,
+        blocks_per_request=1,
+        reuse_ratio=0.5,
+        seed=17,
+    )
+    first = replay_trace(
+        events,
+        mode="no_store",
+        key_prefix="first-run",
+        compact_evidence=True,
+        compact_sample_limit=32,
+    )
+    second = replay_trace(
+        events,
+        mode="no_store",
+        key_prefix="second-run",
+        compact_evidence=True,
+        compact_sample_limit=32,
+    )
+
+    first_indices = [sample["event_index"] for sample in first["evidence"]["samples"]]
+    second_indices = [sample["event_index"] for sample in second["evidence"]["samples"]]
+    assert first_indices == second_indices
+    assert len(first_indices) == 32
+    assert len(json.dumps(first)) < 100_000
+
+
+def test_compact_failure_counters_preserve_runtime_correctness_gates():
+    class WrongContentStore(FakeStore):
+        def get(self, key):
+            super().get(key)
+            return b"wrong"
+
+    content_failure = replay_trace(
+        replay_events(),
+        mode="transparent",
+        target="local_nvme",
+        store_factory=WrongContentStore,
+        descriptor_reader=descriptor,
+        compact_evidence=True,
+    )
+    descriptor_failure = replay_trace(
+        replay_events(),
+        mode="transparent",
+        target="local_nvme",
+        store_factory=FakeStore,
+        descriptor_reader=lambda *_args: {"target": "local_nvme", "object_size": 1},
+        compact_evidence=True,
+    )
+    return_code_failure = replay_trace(
+        replay_events(),
+        mode="direct",
+        target="local_nvme",
+        store_factory=lambda: FakeStore(put_rc=7),
+        config_factory=lambda _target: object(),
+        descriptor_reader=descriptor,
+        compact_evidence=True,
+    )
+
+    assert content_failure["status"] == "fail"
+    assert content_failure["evidence"]["content_mismatches"] == 1
+    assert descriptor_failure["status"] == "fail"
+    assert descriptor_failure["evidence"]["descriptor_mismatches"] == 1
+    assert return_code_failure["status"] == "fail"
+    assert return_code_failure["evidence"]["return_code_failures"] == 1
+    assert all(
+        len(result["evidence"]["failure_records"])
+        <= result["evidence"]["failure_record_limit"]
+        for result in (content_failure, descriptor_failure, return_code_failure)
+    )
+
+
+def test_compact_summary_fails_closed_on_tampered_evidence(tmp_path):
+    base = replay_trace(
+        replay_events(),
+        mode="transparent",
+        target="local_nvme",
+        store_factory=FakeStore,
+        descriptor_reader=descriptor,
+        compact_evidence=True,
+    )
+    base.update({"case_id": "case", "run_id": "run-1", "trace_sha256": "trace-1"})
+    mutations = []
+
+    wrong_count = deepcopy(base)
+    wrong_count["evidence"]["operation_count"] += 1
+    mutations.append(wrong_count)
+
+    content_mismatch = deepcopy(base)
+    content_mismatch["evidence"]["content_mismatches"] = 1
+    mutations.append(content_mismatch)
+
+    wrong_target = deepcopy(base)
+    wrong_target["evidence"]["descriptor_target_counts"] = {
+        "local_nvme": 0,
+        "remote_nof": 3,
+    }
+    mutations.append(wrong_target)
+
+    wrong_summary = deepcopy(base)
+    wrong_summary["evidence"]["summary"]["p50_latency_us"] = -1
+    mutations.append(wrong_summary)
+
+    wrong_sample = deepcopy(base)
+    del wrong_sample["evidence"]["samples"][0]["descriptor"]
+    mutations.append(wrong_sample)
+
+    wrong_mode = deepcopy(base)
+    wrong_mode["evidence_mode"] = "future"
+    mutations.append(wrong_mode)
+
+    wrong_schema = deepcopy(base)
+    wrong_schema["schema_version"] = 999
+    mutations.append(wrong_schema)
+
+    for index, result in enumerate(mutations):
+        result_dir = tmp_path / str(index)
+        result_dir.mkdir()
+        (result_dir / "raw-case.json").write_text(json.dumps(result))
+        conclusion = summarize_results(result_dir, required_cases=["case"])
+        assert conclusion["status"] == "inconclusive"
+        assert conclusion["errors"]
+
+
+def test_compact_summary_rejects_semantic_tampering_with_refreshed_digests(tmp_path):
+    base = replay_trace(
+        replay_events(),
+        mode="no_store",
+        compact_evidence=True,
+        compact_sample_limit=3,
+    )
+    base.update({"case_id": "case", "run_id": "run-1", "trace_sha256": "trace-1"})
+
+    def refresh_digest(result, field):
+        value = result["evidence"][field]
+        digest_field = "sample_records_sha256" if field == "samples" else "summary_sha256"
+        result["evidence"][digest_field] = hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    wrong_store_mapping = deepcopy(base)
+    sample = wrong_store_mapping["evidence"]["samples"][0]
+    sample["store_operation"] = "get"
+    sample["descriptor"] = {"target": "local_nvme", "object_size": sample["block_size"]}
+    refresh_digest(wrong_store_mapping, "samples")
+
+    negative_latency = deepcopy(base)
+    negative_latency["evidence"]["samples"][0]["latency_us"] = -99
+    refresh_digest(negative_latency, "samples")
+
+    missing_quantiles = deepcopy(base)
+    for name in ("p50_latency_us", "p95_latency_us", "p99_latency_us"):
+        missing_quantiles["evidence"]["summary"][name] = None
+    refresh_digest(missing_quantiles, "summary")
+
+    malformed_pacing = deepcopy(base)
+    malformed_pacing["pacing"] = []
+
+    one_event = replay_trace(
+        [TraceEvent(0, "request", "prefix", "block", 4096, "miss", "local_only")],
+        mode="no_store",
+        compact_evidence=True,
+    )
+    one_event.update({"case_id": "case", "run_id": "run-1", "trace_sha256": "trace-1"})
+    boolean_counts = deepcopy(one_event)
+    boolean_counts["event_count"] = True
+    boolean_counts["evidence"]["operation_count"] = True
+
+    for index, result in enumerate(
+        (
+            wrong_store_mapping,
+            negative_latency,
+            missing_quantiles,
+            malformed_pacing,
+            boolean_counts,
+        )
+    ):
+        result_dir = tmp_path / str(index)
+        result_dir.mkdir()
+        (result_dir / "raw-case.json").write_text(json.dumps(result))
+        conclusion = summarize_results(result_dir, required_cases=["case"])
+        assert conclusion["status"] == "inconclusive"
+        assert conclusion["errors"]
+
+
 def _raw_result(mode, case_id, run_id="run-1", target=None, status="pass", errors=None):
     events = replay_events("local_only")
     return {
@@ -360,6 +612,30 @@ def test_offline_summary_rejects_missing_failed_and_mixed_runs(tmp_path):
     assert any("missing cases" in error for error in conclusion["errors"])
 
 
+def test_offline_summary_rejects_manifest_provenance_mismatch(tmp_path):
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"run_id": "expected", "trace_sha256": "expected-trace"})
+    )
+    result = _raw_result("no_store", "case", run_id="actual")
+    result["trace_sha256"] = "actual-trace"
+    (tmp_path / "raw-case.json").write_text(json.dumps(result))
+
+    conclusion = summarize_results(tmp_path, required_cases=["case"])
+
+    assert conclusion["status"] == "inconclusive"
+    assert any("does not match manifest" in error for error in conclusion["errors"])
+
+
+@pytest.mark.parametrize("raw_value", [None, [], 7])
+def test_offline_summary_rejects_non_object_raw_json(tmp_path, raw_value):
+    (tmp_path / "raw-case.json").write_text(json.dumps(raw_value))
+
+    conclusion = summarize_results(tmp_path, required_cases=["case"])
+
+    assert conclusion["status"] == "inconclusive"
+    assert any("must be an object" in error for error in conclusion["errors"])
+
+
 def test_summary_rejects_transparent_descriptor_mismatch_with_explicit_target(
     tmp_path,
 ):
@@ -382,6 +658,8 @@ def test_replay_modes_have_common_result_schema():
         "errors",
     } <= no_store.keys()
     assert no_store["mode"] == "no_store"
+    assert "evidence_mode" not in no_store
+    assert "evidence" not in no_store
 
 
 def test_replay_command_isolates_keys_by_run_and_case(tmp_path, monkeypatch):
@@ -414,3 +692,32 @@ def test_replay_command_isolates_keys_by_run_and_case(tmp_path, monkeypatch):
         "kv-workload-run-1-direct-local",
         "kv-workload-run-1-transparent-local",
     ]
+
+
+def test_replay_command_forwards_compact_evidence_options(tmp_path, monkeypatch):
+    trace = tmp_path / "trace.jsonl"
+    write_trace(trace, replay_events())
+    captured = {}
+
+    def fake_replay(_events, **kwargs):
+        captured.update(kwargs)
+        return {"status": "pass", "errors": [], "operations": []}
+
+    monkeypatch.setattr(kv_workload, "replay_trace", fake_replay)
+    args = Namespace(
+        output=tmp_path / "raw-case.json",
+        trace=trace,
+        manifest=None,
+        mode="no_store",
+        target=None,
+        case_id="case",
+        run_id="run-1",
+        recompute_us=1_000,
+        replay_scale=0.0,
+        compact_evidence=True,
+        compact_sample_limit=7,
+    )
+
+    assert kv_workload._replay_command(args) == 0
+    assert captured["compact_evidence"] is True
+    assert captured["compact_sample_limit"] == 7

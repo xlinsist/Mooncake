@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import heapq
 import json
 import math
 import random
@@ -21,6 +22,35 @@ OPERATIONS = frozenset(("produce", "reuse", "evict", "miss"))
 POLICIES = frozenset(("local_only", "remote_only", "round_robin"))
 REPLAY_MODES = frozenset(("no_store", "direct", "transparent"))
 DESCRIPTOR_TARGETS = frozenset(("local_nvme", "remote_nof"))
+COMPACT_EVIDENCE_SCHEMA_VERSION = 1
+COMPACT_FAILURE_RECORD_LIMIT = 16
+SUMMARY_METRIC_FIELDS = (
+    "operations",
+    "p50_latency_us",
+    "p95_latency_us",
+    "p99_latency_us",
+    "operation_rate",
+    "request_count",
+    "request_hit_rate",
+    "block_hit_rate",
+    "miss_rate",
+    "request_p50_latency_us",
+    "request_p95_latency_us",
+    "request_arrival_lag_p50_us",
+    "request_arrival_lag_p95_us",
+    "request_arrival_lag_max_us",
+    "storage_wait_us",
+    "replay_scale",
+    "scheduled_span_us",
+    "processing_wall_us",
+    "completion_lag_us",
+    "produce",
+    "reuse",
+    "evict",
+    "miss",
+    "local",
+    "remote",
+)
 
 
 @dataclass(frozen=True)
@@ -260,6 +290,203 @@ def _block_payload(block_id: str, block_size: int) -> bytes:
     return (seed * repeats)[:block_size]
 
 
+def _new_compact_state(sample_limit: int) -> dict[str, Any]:
+    return {
+        "sample_limit": sample_limit,
+        "sample_heap": [],
+        "operation_latencies": [],
+        "request_latencies": {},
+        "request_arrival_lags": {},
+        "hit_requests": set(),
+        "operation_counts": {operation: 0 for operation in sorted(OPERATIONS)},
+        "store_operation_counts": {
+            operation: 0 for operation in ("put", "get", "remove", "recompute", "noop")
+        },
+        "descriptor_target_counts": {
+            target: 0 for target in sorted(DESCRIPTOR_TARGETS)
+        },
+        "descriptor_policy_target_counts": {},
+        "descriptor_hasher": hashlib.sha256(),
+        "content_checks": 0,
+        "content_mismatches": 0,
+        "descriptor_mismatches": 0,
+        "return_code_failures": 0,
+        "blocks_seen": 0,
+        "block_hits": 0,
+        "misses": 0,
+        "storage_wait_us": 0.0,
+        "operation_count": 0,
+        "error_count": 0,
+        "failure_records": [],
+    }
+
+
+def _record_compact_operation(state: dict[str, Any], record: dict[str, Any]) -> None:
+    state["operation_count"] += 1
+    operation = record["operation"]
+    store_operation = record["store_operation"] or "noop"
+    latency = float(record["latency_us"])
+    state["operation_counts"][operation] += 1
+    state["store_operation_counts"][store_operation] += 1
+    state["operation_latencies"].append(latency)
+    if operation in ("produce", "reuse"):
+        state["blocks_seen"] += 1
+    if operation == "reuse":
+        state["block_hits"] += 1
+    if operation == "miss":
+        state["misses"] += 1
+    if store_operation in ("put", "get", "remove"):
+        state["storage_wait_us"] += latency
+    request_id = record["request_id"]
+    if request_id != "cleanup" and not request_id.endswith("-cleanup"):
+        state["request_latencies"][request_id] = (
+            state["request_latencies"].get(request_id, 0.0) + latency
+        )
+        state["request_arrival_lags"].setdefault(
+            request_id, record["arrival_lag_us"]
+        )
+        if operation == "reuse":
+            state["hit_requests"].add(request_id)
+    descriptor = record.get("descriptor") or {}
+    descriptor_target = descriptor.get("target")
+    if descriptor_target in DESCRIPTOR_TARGETS:
+        state["descriptor_target_counts"][descriptor_target] += 1
+        policy_counts = state["descriptor_policy_target_counts"].setdefault(
+            record["policy"], {target: 0 for target in sorted(DESCRIPTOR_TARGETS)}
+        )
+        policy_counts[descriptor_target] += 1
+        proof = {
+            "event_index": record["event_index"],
+            "operation": operation,
+            "block_id": record["block_id"],
+            "descriptor": descriptor,
+        }
+        state["descriptor_hasher"].update(
+            json.dumps(proof, sort_keys=True, separators=(",", ":")).encode()
+        )
+        state["descriptor_hasher"].update(b"\n")
+    if record["return_code"] != 0:
+        state["return_code_failures"] += 1
+    if (
+        record["error"] is not None
+        and len(state["failure_records"]) < COMPACT_FAILURE_RECORD_LIMIT
+    ):
+        state["failure_records"].append(record.copy())
+
+    sample_identity = (
+        f"{record['event_index']}\0{request_id}\0{record['block_id']}\0{operation}"
+    )
+    rank = int.from_bytes(hashlib.sha256(sample_identity.encode()).digest(), "big")
+    entry = (-rank, -record["event_index"], record.copy())
+    sample_heap = state["sample_heap"]
+    if len(sample_heap) < state["sample_limit"]:
+        heapq.heappush(sample_heap, entry)
+    elif rank < -sample_heap[0][0]:
+        heapq.heapreplace(sample_heap, entry)
+
+
+def _finalize_compact_evidence(
+    state: dict[str, Any], result: dict[str, Any]
+) -> dict[str, Any]:
+    request_latencies = list(state["request_latencies"].values())
+    request_arrival_lags = [
+        float(value)
+        for value in state["request_arrival_lags"].values()
+        if value is not None
+    ]
+    operation_latencies = state["operation_latencies"]
+    latency_total = sum(operation_latencies)
+    request_count = len(state["request_latencies"])
+    blocks_seen = state["blocks_seen"]
+    samples = [
+        entry[2]
+        for entry in sorted(
+            state["sample_heap"], key=lambda entry: (-entry[0], -entry[1])
+        )
+    ]
+    sample_indices = [record["event_index"] for record in samples]
+    sample_digest = hashlib.sha256(
+        json.dumps(sample_indices, separators=(",", ":")).encode()
+    ).hexdigest()
+    sample_records_digest = hashlib.sha256(
+        json.dumps(samples, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    pacing = result.get("pacing", {})
+    summary = {
+        "operations": state["operation_count"],
+        "p50_latency_us": _percentile(operation_latencies, 50),
+        "p95_latency_us": _percentile(operation_latencies, 95),
+        "p99_latency_us": _percentile(operation_latencies, 99),
+        "operation_rate": round(
+            state["operation_count"] / (latency_total / 1_000_000), 6
+        )
+        if latency_total > 0
+        else None,
+        "request_count": request_count,
+        "request_hit_rate": round(
+            len(state["hit_requests"]) / request_count, 6
+        )
+        if request_count
+        else None,
+        "block_hit_rate": round(state["block_hits"] / blocks_seen, 6)
+        if blocks_seen
+        else None,
+        "miss_rate": round(state["misses"] / state["operation_count"], 6)
+        if state["operation_count"]
+        else None,
+        "request_p50_latency_us": _percentile(request_latencies, 50),
+        "request_p95_latency_us": _percentile(request_latencies, 95),
+        "request_arrival_lag_p50_us": _percentile(request_arrival_lags, 50),
+        "request_arrival_lag_p95_us": _percentile(request_arrival_lags, 95),
+        "request_arrival_lag_max_us": round(max(request_arrival_lags), 6)
+        if request_arrival_lags
+        else None,
+        "storage_wait_us": round(state["storage_wait_us"], 6),
+        "replay_scale": pacing.get("replay_scale", 0),
+        "scheduled_span_us": pacing.get("scheduled_span_us"),
+        "processing_wall_us": pacing.get("processing_wall_us"),
+        "completion_lag_us": pacing.get("completion_lag_us"),
+        "produce": state["operation_counts"]["produce"],
+        "reuse": state["operation_counts"]["reuse"],
+        "evict": state["operation_counts"]["evict"],
+        "miss": state["operation_counts"]["miss"],
+        "local": state["descriptor_target_counts"]["local_nvme"],
+        "remote": state["descriptor_target_counts"]["remote_nof"],
+    }
+    summary_digest = hashlib.sha256(
+        json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "schema_version": COMPACT_EVIDENCE_SCHEMA_VERSION,
+        "sample_limit": state["sample_limit"],
+        "samples": samples,
+        "sample_event_indices_sha256": sample_digest,
+        "sample_records_sha256": sample_records_digest,
+        "operation_count": state["operation_count"],
+        "operation_latency_total_us": round(latency_total, 6),
+        "operation_counts": state["operation_counts"],
+        "store_operation_counts": state["store_operation_counts"],
+        "descriptor_checks": sum(state["descriptor_target_counts"].values()),
+        "descriptor_target_counts": state["descriptor_target_counts"],
+        "descriptor_policy_target_counts": state[
+            "descriptor_policy_target_counts"
+        ],
+        "descriptor_proof_sha256": state["descriptor_hasher"].hexdigest(),
+        "content_checks": state["content_checks"],
+        "content_mismatches": state["content_mismatches"],
+        "descriptor_mismatches": state["descriptor_mismatches"],
+        "return_code_failures": state["return_code_failures"],
+        "request_count": request_count,
+        "hit_request_count": len(state["hit_requests"]),
+        "failure_record_limit": COMPACT_FAILURE_RECORD_LIMIT,
+        "failure_records": state["failure_records"],
+        "error_count": state["error_count"],
+        "error_records_truncated": state["error_count"] > len(result.get("errors", [])),
+        "summary": summary,
+        "summary_sha256": summary_digest,
+    }
+
+
 def replay_trace(
     events: Iterable[TraceEvent],
     *,
@@ -275,6 +502,8 @@ def replay_trace(
     clock_ns: Callable[[], int] = time.perf_counter_ns,
     sleeper: Callable[[float], None] = time.sleep,
     replay_scale: float = 0.0,
+    compact_evidence: bool = False,
+    compact_sample_limit: int = 128,
 ) -> dict[str, Any]:
     """Replay a validated trace in timestamp order and return raw case results.
 
@@ -295,6 +524,8 @@ def replay_trace(
         raise ValueError("direct replay requires local_nvme or remote_nof target")
     if not key_prefix:
         raise ValueError("key_prefix is required")
+    if compact_sample_limit <= 0:
+        raise ValueError("compact_sample_limit must be positive")
 
     result: dict[str, Any] = {
         "schema_version": REPLAY_SCHEMA_VERSION,
@@ -302,7 +533,6 @@ def replay_trace(
         "mode": mode,
         "target": target,
         "event_count": len(materialized),
-        "operations": [],
         "errors": [],
         "recompute_model": (
             {"kind": "fixed_proxy", "latency_us": recompute_us}
@@ -315,7 +545,17 @@ def replay_trace(
             "source_timestamp_unit": "microseconds",
         },
     }
+    compact_state = (
+        _new_compact_state(compact_sample_limit) if compact_evidence else None
+    )
+    if compact_evidence:
+        result["evidence_mode"] = "compact"
+    else:
+        result["operations"] = []
     if not materialized:
+        if compact_state is not None:
+            compact_state["error_count"] = len(result["errors"])
+            result["evidence"] = _finalize_compact_evidence(compact_state, result)
         return result
 
     store = None
@@ -383,7 +623,9 @@ def replay_trace(
                 "arrival_lag_us": arrival_lag_us,
                 "error": None,
             }
-            result["operations"].append(record)
+            if not compact_evidence:
+                result["operations"].append(record)
+            operation_failed = False
             try:
                 if event.operation == "miss" or mode == "no_store":
                     record["store_operation"] = (
@@ -397,65 +639,88 @@ def replay_trace(
                     elif pacing_started_ns is not None and recompute_us > 0:
                         sleeper(recompute_us / 1_000_000)
                         modeled_work_sleep_us += recompute_us
-                    continue
-
-                payload = _block_payload(event.block_id, event.block_size)
-                started_ns = clock_ns()
-                if event.operation == "produce":
-                    record["store_operation"] = "put"
-                    rc = (
-                        store.put(key, payload)
-                        if config is None
-                        else store.put(key, payload, config)
-                    )
-                    record["latency_us"] = (clock_ns() - started_ns) / 1_000
-                    record["return_code"] = rc
-                    if rc != 0:
-                        raise RuntimeError(f"put returned {rc}")
-                    live_keys.add(key)
-                    expected_target = target
-                    if mode == "transparent" and expected_target is None:
-                        expected_target = {
-                            "local_only": "local_nvme",
-                            "remote_only": "remote_nof",
-                            "round_robin": None,
-                        }[event.policy]
-                    descriptor = descriptor_reader(store, key, expected_target)
-                    if descriptor.get("object_size") != event.block_size:
-                        raise AssertionError(
-                            f"descriptor size mismatch for {key}: "
-                            f"{descriptor.get('object_size')} != {event.block_size}"
+                else:
+                    payload = _block_payload(event.block_id, event.block_size)
+                    started_ns = clock_ns()
+                    if event.operation == "produce":
+                        record["store_operation"] = "put"
+                        rc = (
+                            store.put(key, payload)
+                            if config is None
+                            else store.put(key, payload, config)
                         )
-                    descriptors[event.block_id] = descriptor
-                    record["descriptor"] = descriptor
-                elif event.operation == "reuse":
-                    record["store_operation"] = "get"
-                    actual = store.get(key)
-                    record["latency_us"] = (clock_ns() - started_ns) / 1_000
-                    if actual != payload:
-                        raise AssertionError(f"content mismatch for {key}")
-                    expected = descriptors[event.block_id]
-                    descriptor = descriptor_reader(store, key, expected["target"])
-                    if descriptor != expected:
-                        raise AssertionError(f"descriptor changed for {key}")
-                    record["descriptor"] = descriptor
-                elif event.operation == "evict":
-                    record["store_operation"] = "remove"
-                    record["descriptor"] = descriptors[event.block_id]
-                    rc = store.remove(key, True)
-                    record["latency_us"] = (clock_ns() - started_ns) / 1_000
-                    record["return_code"] = rc
-                    if rc != 0:
-                        raise RuntimeError(f"remove returned {rc}")
-                    live_keys.discard(key)
-                    active_keys.pop(event.block_id)
-                    descriptors.pop(event.block_id, None)
+                        record["latency_us"] = (clock_ns() - started_ns) / 1_000
+                        record["return_code"] = rc
+                        if rc != 0:
+                            raise RuntimeError(f"put returned {rc}")
+                        live_keys.add(key)
+                        expected_target = target
+                        if mode == "transparent" and expected_target is None:
+                            expected_target = {
+                                "local_only": "local_nvme",
+                                "remote_only": "remote_nof",
+                                "round_robin": None,
+                            }[event.policy]
+                        try:
+                            descriptor = descriptor_reader(store, key, expected_target)
+                        except Exception:
+                            if compact_state is not None:
+                                compact_state["descriptor_mismatches"] += 1
+                            raise
+                        if descriptor.get("object_size") != event.block_size:
+                            if compact_state is not None:
+                                compact_state["descriptor_mismatches"] += 1
+                            raise AssertionError(
+                                f"descriptor size mismatch for {key}: "
+                                f"{descriptor.get('object_size')} != {event.block_size}"
+                            )
+                        descriptors[event.block_id] = descriptor
+                        record["descriptor"] = descriptor
+                    elif event.operation == "reuse":
+                        record["store_operation"] = "get"
+                        actual = store.get(key)
+                        record["latency_us"] = (clock_ns() - started_ns) / 1_000
+                        if compact_state is not None:
+                            compact_state["content_checks"] += 1
+                        if actual != payload:
+                            if compact_state is not None:
+                                compact_state["content_mismatches"] += 1
+                            raise AssertionError(f"content mismatch for {key}")
+                        expected = descriptors[event.block_id]
+                        try:
+                            descriptor = descriptor_reader(
+                                store, key, expected["target"]
+                            )
+                        except Exception:
+                            if compact_state is not None:
+                                compact_state["descriptor_mismatches"] += 1
+                            raise
+                        if descriptor != expected:
+                            if compact_state is not None:
+                                compact_state["descriptor_mismatches"] += 1
+                            raise AssertionError(f"descriptor changed for {key}")
+                        record["descriptor"] = descriptor
+                    elif event.operation == "evict":
+                        record["store_operation"] = "remove"
+                        record["descriptor"] = descriptors[event.block_id]
+                        rc = store.remove(key, True)
+                        record["latency_us"] = (clock_ns() - started_ns) / 1_000
+                        record["return_code"] = rc
+                        if rc != 0:
+                            raise RuntimeError(f"remove returned {rc}")
+                        live_keys.discard(key)
+                        active_keys.pop(event.block_id)
+                        descriptors.pop(event.block_id, None)
             except Exception as error:
                 record["error"] = str(error)
                 result["errors"].append(
                     {"event_index": event_index, "key": key, "error": str(error)}
                 )
                 result["status"] = "fail"
+                operation_failed = True
+            if compact_state is not None:
+                _record_compact_operation(compact_state, record)
+            if operation_failed:
                 break
     except Exception as error:
         result["errors"].append({"event_index": None, "key": None, "error": str(error)})
@@ -496,6 +761,10 @@ def replay_trace(
                     {"event_index": None, "key": None, "error": str(error)}
                 )
                 result["status"] = "fail"
+    if compact_state is not None:
+        compact_state["error_count"] = len(result["errors"])
+        result["errors"] = result["errors"][:COMPACT_FAILURE_RECORD_LIMIT]
+        result["evidence"] = _finalize_compact_evidence(compact_state, result)
     return result
 
 
@@ -507,12 +776,476 @@ def _percentile(values: list[float], percentile: int) -> float | None:
     return round(ordered[index], 6)
 
 
+def _is_non_negative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _compact_operations(result: dict[str, Any]) -> list[dict[str, Any]]:
+    if result.get("schema_version") != REPLAY_SCHEMA_VERSION:
+        raise ValueError("unsupported replay result schema")
+    if result.get("mode") not in REPLAY_MODES:
+        raise ValueError("compact replay mode is invalid")
+    if result.get("target") is not None and result.get("target") not in DESCRIPTOR_TARGETS:
+        raise ValueError("compact replay target is invalid")
+    if result.get("mode") == "direct" and result.get("target") is None:
+        raise ValueError("compact direct replay requires a target")
+    pacing = result.get("pacing")
+    if not isinstance(pacing, dict):
+        raise ValueError("compact pacing must be an object")
+    replay_scale = pacing.get("replay_scale")
+    if (
+        not isinstance(pacing.get("enabled"), bool)
+        or isinstance(replay_scale, bool)
+        or not isinstance(replay_scale, (int, float))
+        or not math.isfinite(replay_scale)
+        or replay_scale < 0
+        or pacing["enabled"] != (replay_scale > 0)
+        or pacing.get("source_timestamp_unit") != "microseconds"
+    ):
+        raise ValueError("compact pacing metadata is invalid")
+    if "operations" in result:
+        raise ValueError("compact result must not contain full operations")
+    evidence = result.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("compact evidence must be an object")
+    if evidence.get("schema_version") != COMPACT_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("unsupported compact evidence schema")
+
+    event_count = result.get("event_count")
+    operation_count = evidence.get("operation_count")
+    sample_limit = evidence.get("sample_limit")
+    if not _is_non_negative_int(event_count):
+        raise ValueError("compact event_count must be a non-negative integer")
+    if not _is_non_negative_int(operation_count) or operation_count != event_count:
+        raise ValueError("compact operation_count must equal event_count")
+    if not _is_non_negative_int(sample_limit) or sample_limit == 0:
+        raise ValueError("compact sample_limit must be a positive integer")
+
+    operation_counts = evidence.get("operation_counts")
+    if not isinstance(operation_counts, dict) or set(operation_counts) != OPERATIONS:
+        raise ValueError("compact operation_counts have invalid keys")
+    if any(not _is_non_negative_int(value) for value in operation_counts.values()):
+        raise ValueError("compact operation_counts must be non-negative integers")
+    if sum(operation_counts.values()) != operation_count:
+        raise ValueError("compact operation_counts do not sum to operation_count")
+
+    store_operations = ("put", "get", "remove", "recompute", "noop")
+    store_counts = evidence.get("store_operation_counts")
+    if not isinstance(store_counts, dict) or set(store_counts) != set(store_operations):
+        raise ValueError("compact store_operation_counts have invalid keys")
+    if any(not _is_non_negative_int(value) for value in store_counts.values()):
+        raise ValueError("compact store_operation_counts must be non-negative integers")
+    if sum(store_counts.values()) != operation_count:
+        raise ValueError("compact store_operation_counts do not sum to operation_count")
+    if result.get("mode") == "no_store":
+        expected_store_counts = {
+            "put": 0,
+            "get": 0,
+            "remove": 0,
+            "recompute": operation_counts["produce"]
+            + operation_counts["reuse"]
+            + operation_counts["miss"],
+            "noop": operation_counts["evict"],
+        }
+    else:
+        expected_store_counts = {
+            "put": operation_counts["produce"],
+            "get": operation_counts["reuse"],
+            "remove": operation_counts["evict"],
+            "recompute": operation_counts["miss"],
+            "noop": 0,
+        }
+    if store_counts != expected_store_counts:
+        raise ValueError("compact store operation counts are inconsistent")
+
+    target_counts = evidence.get("descriptor_target_counts")
+    if not isinstance(target_counts, dict) or set(target_counts) != DESCRIPTOR_TARGETS:
+        raise ValueError("compact descriptor_target_counts have invalid keys")
+    if any(not _is_non_negative_int(value) for value in target_counts.values()):
+        raise ValueError("compact descriptor counts must be non-negative integers")
+    descriptor_checks = evidence.get("descriptor_checks")
+    expected_descriptor_checks = store_counts["put"] + store_counts["get"] + store_counts["remove"]
+    if not _is_non_negative_int(descriptor_checks):
+        raise ValueError("compact descriptor_checks must be a non-negative integer")
+    if descriptor_checks != sum(target_counts.values()):
+        raise ValueError("compact descriptor counts do not sum to descriptor_checks")
+    if descriptor_checks != expected_descriptor_checks:
+        raise ValueError("compact descriptor_checks do not match store operations")
+
+    policy_counts = evidence.get("descriptor_policy_target_counts")
+    if not isinstance(policy_counts, dict) or not set(policy_counts) <= POLICIES:
+        raise ValueError("compact descriptor policy counts have invalid policies")
+    explicit_target = result.get("target")
+    accumulated_targets = {target: 0 for target in DESCRIPTOR_TARGETS}
+    for policy, counts in policy_counts.items():
+        if not isinstance(counts, dict) or set(counts) != DESCRIPTOR_TARGETS:
+            raise ValueError("compact descriptor policy counts have invalid targets")
+        if any(not _is_non_negative_int(value) for value in counts.values()):
+            raise ValueError("compact descriptor policy counts must be non-negative")
+        expected_target = explicit_target or {
+            "local_only": "local_nvme",
+            "remote_only": "remote_nof",
+            "round_robin": None,
+        }[policy]
+        if expected_target is not None and any(
+            value for target, value in counts.items() if target != expected_target
+        ):
+            raise ValueError(f"compact descriptor policy mismatch for {policy}")
+        for target, value in counts.items():
+            accumulated_targets[target] += value
+    if accumulated_targets != target_counts:
+        raise ValueError("compact policy descriptor counts do not match target counts")
+    if explicit_target is not None and any(
+        value for target, value in target_counts.items() if target != explicit_target
+    ):
+        raise ValueError("compact descriptors do not match explicit target")
+
+    proof_digest = evidence.get("descriptor_proof_sha256")
+    if (
+        not isinstance(proof_digest, str)
+        or len(proof_digest) != 64
+        or any(character not in "0123456789abcdef" for character in proof_digest)
+    ):
+        raise ValueError("compact descriptor proof digest is invalid")
+    counters = (
+        "content_checks",
+        "content_mismatches",
+        "descriptor_mismatches",
+        "return_code_failures",
+        "error_count",
+    )
+    if any(
+        not _is_non_negative_int(evidence.get(name))
+        for name in counters
+    ):
+        raise ValueError("compact correctness counters must be non-negative integers")
+    errors = result.get("errors")
+    errors_truncated = evidence.get("error_records_truncated")
+    if (
+        not isinstance(errors, list)
+        or not isinstance(errors_truncated, bool)
+        or evidence["error_count"] < len(errors)
+        or errors_truncated != (evidence["error_count"] > len(errors))
+    ):
+        raise ValueError("compact error_count does not match result errors")
+    expected_content_checks = (
+        0 if result.get("mode") == "no_store" else operation_counts["reuse"]
+    )
+    if evidence["content_checks"] != expected_content_checks:
+        raise ValueError("compact content_checks do not match reuse operations")
+    if any(
+        evidence[name] != 0
+        for name in (
+            "content_mismatches",
+            "descriptor_mismatches",
+            "return_code_failures",
+            "error_count",
+        )
+    ):
+        raise ValueError("compact correctness gate failed")
+
+    failure_limit = evidence.get("failure_record_limit")
+    failure_records = evidence.get("failure_records")
+    if failure_limit != COMPACT_FAILURE_RECORD_LIMIT:
+        raise ValueError("compact failure record limit is invalid")
+    if not isinstance(failure_records, list) or len(failure_records) > failure_limit:
+        raise ValueError("compact failure records are invalid")
+    if failure_records:
+        raise ValueError("compact result contains failure records")
+
+    summary = evidence.get("summary")
+    if not isinstance(summary, dict) or set(summary) != set(SUMMARY_METRIC_FIELDS):
+        raise ValueError("compact summary has invalid fields")
+    if any(
+        value is not None
+        and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        )
+        for value in summary.values()
+    ):
+        raise ValueError("compact summary metrics must be finite numbers or null")
+    count_metrics = ("operations", "request_count", "produce", "reuse", "evict", "miss", "local", "remote")
+    if any(
+        isinstance(summary[name], bool)
+        or not isinstance(summary[name], int)
+        or summary[name] < 0
+        for name in count_metrics
+    ):
+        raise ValueError("compact summary counts must be non-negative integers")
+    non_negative_metrics = (
+        "p50_latency_us",
+        "p95_latency_us",
+        "p99_latency_us",
+        "operation_rate",
+        "request_p50_latency_us",
+        "request_p95_latency_us",
+        "request_arrival_lag_p50_us",
+        "request_arrival_lag_p95_us",
+        "request_arrival_lag_max_us",
+        "storage_wait_us",
+        "replay_scale",
+        "scheduled_span_us",
+        "processing_wall_us",
+        "completion_lag_us",
+    )
+    if any(summary[name] is not None and summary[name] < 0 for name in non_negative_metrics):
+        raise ValueError("compact summary metrics must be non-negative")
+    for rate_name in ("request_hit_rate", "block_hit_rate", "miss_rate"):
+        rate = summary[rate_name]
+        if rate is not None and not 0 <= rate <= 1:
+            raise ValueError(f"compact summary {rate_name} is outside [0, 1]")
+    for quantiles in (
+        ("p50_latency_us", "p95_latency_us", "p99_latency_us"),
+        ("request_p50_latency_us", "request_p95_latency_us"),
+        (
+            "request_arrival_lag_p50_us",
+            "request_arrival_lag_p95_us",
+            "request_arrival_lag_max_us",
+        ),
+    ):
+        values = [summary[name] for name in quantiles]
+        present = [value for value in values if value is not None]
+        if present != sorted(present):
+            raise ValueError("compact summary quantiles are inconsistent")
+    operation_quantiles = [
+        summary[name] for name in ("p50_latency_us", "p95_latency_us", "p99_latency_us")
+    ]
+    if (operation_count > 0 and not all(value is not None for value in operation_quantiles)) or (
+        operation_count == 0 and any(value is not None for value in operation_quantiles)
+    ):
+        raise ValueError("compact operation quantile presence is inconsistent")
+    summary_digest = hashlib.sha256(
+        json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if evidence.get("summary_sha256") != summary_digest:
+        raise ValueError("compact summary digest mismatch")
+    expected_summary_counts = {
+        "operations": operation_count,
+        "produce": operation_counts["produce"],
+        "reuse": operation_counts["reuse"],
+        "evict": operation_counts["evict"],
+        "miss": operation_counts["miss"],
+        "local": target_counts["local_nvme"],
+        "remote": target_counts["remote_nof"],
+    }
+    if any(summary[name] != value for name, value in expected_summary_counts.items()):
+        raise ValueError("compact summary counts are inconsistent")
+    request_count = evidence.get("request_count")
+    hit_request_count = evidence.get("hit_request_count")
+    if (
+        not _is_non_negative_int(request_count)
+        or not _is_non_negative_int(hit_request_count)
+        or not 0 <= hit_request_count <= request_count
+        or summary["request_count"] != request_count
+    ):
+        raise ValueError("compact request counts are inconsistent")
+    expected_request_hit_rate = (
+        round(hit_request_count / request_count, 6) if request_count else None
+    )
+    if summary["request_hit_rate"] != expected_request_hit_rate:
+        raise ValueError("compact request hit rate is inconsistent")
+    request_quantiles = [
+        summary[name] for name in ("request_p50_latency_us", "request_p95_latency_us")
+    ]
+    if (request_count > 0 and not all(value is not None for value in request_quantiles)) or (
+        request_count == 0 and any(value is not None for value in request_quantiles)
+    ):
+        raise ValueError("compact request quantile presence is inconsistent")
+    blocks_seen = operation_counts["produce"] + operation_counts["reuse"]
+    expected_block_hit_rate = (
+        round(operation_counts["reuse"] / blocks_seen, 6) if blocks_seen else None
+    )
+    if summary["block_hit_rate"] != expected_block_hit_rate:
+        raise ValueError("compact block hit rate is inconsistent")
+    expected_miss_rate = (
+        round(operation_counts["miss"] / operation_count, 6)
+        if operation_count
+        else None
+    )
+    if summary["miss_rate"] != expected_miss_rate:
+        raise ValueError("compact miss rate is inconsistent")
+    latency_total = evidence.get("operation_latency_total_us")
+    if (
+        isinstance(latency_total, bool)
+        or not isinstance(latency_total, (int, float))
+        or not math.isfinite(latency_total)
+        or latency_total < 0
+    ):
+        raise ValueError("compact operation latency total is invalid")
+    expected_operation_rate = (
+        round(operation_count / (latency_total / 1_000_000), 6)
+        if latency_total > 0
+        else None
+    )
+    if summary["operation_rate"] != expected_operation_rate:
+        raise ValueError("compact operation rate is inconsistent")
+    for name, expected in {
+        "replay_scale": pacing.get("replay_scale", 0),
+        "scheduled_span_us": pacing.get("scheduled_span_us"),
+        "processing_wall_us": pacing.get("processing_wall_us"),
+        "completion_lag_us": pacing.get("completion_lag_us"),
+    }.items():
+        if summary[name] != expected:
+            raise ValueError(f"compact summary {name} is inconsistent")
+    arrival_metrics = [
+        summary[name]
+        for name in (
+            "request_arrival_lag_p50_us",
+            "request_arrival_lag_p95_us",
+            "request_arrival_lag_max_us",
+        )
+    ]
+    expected_arrival_metrics = pacing["enabled"] and request_count > 0
+    if (expected_arrival_metrics and not all(value is not None for value in arrival_metrics)) or (
+        not expected_arrival_metrics and any(value is not None for value in arrival_metrics)
+    ):
+        raise ValueError("compact arrival metric presence is inconsistent")
+    pacing_metrics = [
+        summary[name]
+        for name in ("scheduled_span_us", "processing_wall_us", "completion_lag_us")
+    ]
+    if (pacing["enabled"] and not all(value is not None for value in pacing_metrics)) or (
+        not pacing["enabled"] and any(value is not None for value in pacing_metrics)
+    ):
+        raise ValueError("compact pacing metric presence is inconsistent")
+
+    samples = evidence.get("samples")
+    expected_sample_count = min(sample_limit, operation_count)
+    if not isinstance(samples, list) or len(samples) != expected_sample_count:
+        raise ValueError("compact sample count does not match its declared bound")
+    sample_indices = []
+    sample_ranks = []
+    sample_fields = {
+        "event_index",
+        "timestamp_us",
+        "request_id",
+        "prefix_id",
+        "key",
+        "block_id",
+        "block_size",
+        "operation",
+        "policy",
+        "target_policy",
+        "store_operation",
+        "descriptor",
+        "return_code",
+        "latency_us",
+        "scheduled_offset_us",
+        "arrival_lag_us",
+        "error",
+    }
+    for sample in samples:
+        if not isinstance(sample, dict) or set(sample) != sample_fields:
+            raise ValueError("compact sample must be an object")
+        event_index = sample.get("event_index")
+        if not _is_non_negative_int(event_index) or event_index >= event_count:
+            raise ValueError("compact sample event_index is out of range")
+        if sample.get("operation") not in OPERATIONS:
+            raise ValueError("compact sample operation is invalid")
+        if (
+            not _is_non_negative_int(sample.get("timestamp_us"))
+            or not sample.get("request_id")
+            or not sample.get("prefix_id")
+            or not sample.get("key")
+            or not sample.get("block_id")
+        ):
+            raise ValueError("compact sample identity is invalid")
+        sample_store_operation = sample.get("store_operation") or "noop"
+        if sample_store_operation not in store_operations:
+            raise ValueError("compact sample store operation is invalid")
+        expected_sample_store_operation = (
+            "noop"
+            if result["mode"] == "no_store" and sample["operation"] == "evict"
+            else "recompute"
+            if result["mode"] == "no_store" or sample["operation"] == "miss"
+            else {"produce": "put", "reuse": "get", "evict": "remove"}[
+                sample["operation"]
+            ]
+        )
+        if sample_store_operation != expected_sample_store_operation:
+            raise ValueError("compact sample store operation is inconsistent")
+        if sample.get("policy") not in POLICIES:
+            raise ValueError("compact sample policy is invalid")
+        if sample.get("target_policy") != sample["policy"]:
+            raise ValueError("compact sample target policy is inconsistent")
+        if (
+            not _is_non_negative_int(sample.get("return_code"))
+            or sample["return_code"] != 0
+            or sample.get("error") is not None
+        ):
+            raise ValueError("compact sample correctness fields are invalid")
+        block_size = sample.get("block_size")
+        if not _is_non_negative_int(block_size) or block_size == 0:
+            raise ValueError("compact sample block_size is invalid")
+        latency = sample.get("latency_us")
+        if (
+            isinstance(latency, bool)
+            or not isinstance(latency, (int, float))
+            or not math.isfinite(latency)
+            or latency < 0
+        ):
+            raise ValueError("compact sample latency is invalid")
+        for timing_name in ("scheduled_offset_us", "arrival_lag_us"):
+            timing = sample.get(timing_name)
+            if pacing["enabled"]:
+                if (
+                    isinstance(timing, bool)
+                    or not isinstance(timing, (int, float))
+                    or not math.isfinite(timing)
+                    or timing < 0
+                ):
+                    raise ValueError(f"compact sample {timing_name} is invalid")
+            elif timing is not None:
+                raise ValueError(f"compact unpaced sample {timing_name} must be null")
+        descriptor = sample.get("descriptor")
+        if sample_store_operation in ("put", "get", "remove"):
+            if (
+                not isinstance(descriptor, dict)
+                or descriptor.get("target") not in DESCRIPTOR_TARGETS
+                or descriptor.get("object_size") != block_size
+            ):
+                raise ValueError("compact store sample descriptor is invalid")
+        elif descriptor is not None:
+            raise ValueError("compact non-store sample must not have a descriptor")
+        sample_indices.append(event_index)
+        sample_identity = (
+            f"{event_index}\0{sample.get('request_id')}\0"
+            f"{sample.get('block_id')}\0{sample.get('operation')}"
+        )
+        sample_ranks.append(
+            int.from_bytes(hashlib.sha256(sample_identity.encode()).digest(), "big")
+        )
+    if len(sample_indices) != len(set(sample_indices)):
+        raise ValueError("compact sample event indices must be unique")
+    if sample_ranks != sorted(sample_ranks):
+        raise ValueError("compact samples are not in deterministic rank order")
+    sample_digest = hashlib.sha256(
+        json.dumps(sample_indices, separators=(",", ":")).encode()
+    ).hexdigest()
+    if evidence.get("sample_event_indices_sha256") != sample_digest:
+        raise ValueError("compact sample digest mismatch")
+    sample_records_digest = hashlib.sha256(
+        json.dumps(samples, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if evidence.get("sample_records_sha256") != sample_records_digest:
+        raise ValueError("compact sample records digest mismatch")
+    return samples
+
+
 def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    operations = result.get("operations")
-    if not isinstance(operations, list):
-        raise ValueError("raw result operations must be a list")
     if result.get("status") != "pass" or result.get("errors"):
         raise ValueError("raw result contains failed operations")
+    evidence_mode = result.get("evidence_mode")
+    if evidence_mode == "compact":
+        operations = _compact_operations(result)
+    else:
+        if evidence_mode is not None or "evidence" in result:
+            raise ValueError("unsupported or ambiguous evidence mode")
+        operations = result.get("operations")
+        if not isinstance(operations, list):
+            raise ValueError("raw result operations must be a list")
     rows: list[dict[str, Any]] = []
     for operation in operations:
         if not isinstance(operation, dict):
@@ -538,6 +1271,8 @@ def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, 
                 f"descriptor mismatch for {operation.get('block_id')}: "
                 f"{target} != {expected_target}"
             )
+        if operation.get("error") is not None or operation.get("return_code", 0) != 0:
+            raise ValueError("operation sample failed its correctness gate")
         latency = float(operation.get("latency_us", 0.0))
         rows.append(
             {
@@ -555,6 +1290,69 @@ def _case_rows(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, 
             }
         )
     return rows, result
+
+
+def _summary_from_rows(rows: list[dict[str, Any]], result: dict[str, Any]) -> dict[str, Any]:
+    latencies = [row["latency_us"] for row in rows]
+    request_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row["request_id"] != "cleanup" and not row["request_id"].endswith("-cleanup"):
+            request_rows.setdefault(row["request_id"], []).append(row)
+    request_latencies = [
+        sum(row["latency_us"] for row in group) for group in request_rows.values()
+    ]
+    request_arrival_lags = [
+        float(group[0]["arrival_lag_us"])
+        for group in request_rows.values()
+        if group[0]["arrival_lag_us"] is not None
+    ]
+    request_count = len(request_rows)
+    hit_requests = sum(
+        any(row["operation"] == "reuse" for row in group)
+        for group in request_rows.values()
+    )
+    blocks_seen = sum(row["operation"] in ("produce", "reuse") for row in rows)
+    block_hits = sum(row["operation"] == "reuse" for row in rows)
+    misses = sum(row["operation"] == "miss" for row in rows)
+    storage_wait = sum(
+        row["latency_us"]
+        for row in rows
+        if row["store_operation"] in ("put", "get", "remove")
+    )
+    pacing = result.get("pacing", {})
+    return {
+        "operations": len(rows),
+        "p50_latency_us": _percentile(latencies, 50),
+        "p95_latency_us": _percentile(latencies, 95),
+        "p99_latency_us": _percentile(latencies, 99),
+        "operation_rate": round(len(rows) / (sum(latencies) / 1_000_000), 6)
+        if sum(latencies) > 0
+        else None,
+        "request_count": request_count,
+        "request_hit_rate": round(hit_requests / request_count, 6)
+        if request_count
+        else None,
+        "block_hit_rate": round(block_hits / blocks_seen, 6) if blocks_seen else None,
+        "miss_rate": round(misses / len(rows), 6) if rows else None,
+        "request_p50_latency_us": _percentile(request_latencies, 50),
+        "request_p95_latency_us": _percentile(request_latencies, 95),
+        "request_arrival_lag_p50_us": _percentile(request_arrival_lags, 50),
+        "request_arrival_lag_p95_us": _percentile(request_arrival_lags, 95),
+        "request_arrival_lag_max_us": round(max(request_arrival_lags), 6)
+        if request_arrival_lags
+        else None,
+        "storage_wait_us": round(storage_wait, 6),
+        "replay_scale": pacing.get("replay_scale", 0),
+        "scheduled_span_us": pacing.get("scheduled_span_us"),
+        "processing_wall_us": pacing.get("processing_wall_us"),
+        "completion_lag_us": pacing.get("completion_lag_us"),
+        "produce": sum(row["operation"] == "produce" for row in rows),
+        "reuse": sum(row["operation"] == "reuse" for row in rows),
+        "evict": sum(row["operation"] == "evict" for row in rows),
+        "miss": misses,
+        "local": sum(row["descriptor_target"] == "local_nvme" for row in rows),
+        "remote": sum(row["descriptor_target"] == "remote_nof" for row in rows),
+    }
 
 
 def summarize_results(
@@ -586,6 +1384,8 @@ def summarize_results(
     for raw_path in raw_paths:
         try:
             result = json.loads(raw_path.read_text(encoding="utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("raw result must be an object")
             case_id = str(result.get("case_id") or raw_path.stem.removeprefix("raw-"))
             if case_id in seen_cases:
                 errors.append(f"duplicate case: {case_id}")
@@ -594,87 +1394,29 @@ def summarize_results(
                 run_ids.add(str(result["run_id"]))
             if result.get("trace_sha256") is not None:
                 trace_digests.add(str(result["trace_sha256"]))
+            manifest_run_id = manifest.get("run_id")
+            if manifest_run_id is not None and result.get("run_id") != manifest_run_id:
+                raise ValueError("raw result run ID does not match manifest")
+            manifest_trace_digest = manifest.get("trace_sha256")
+            if (
+                manifest_trace_digest is not None
+                and result.get("trace_sha256") != manifest_trace_digest
+            ):
+                raise ValueError("raw result trace digest does not match manifest")
             rows, result = _case_rows(result)
             all_rows.extend([{**row, "case_id": case_id} for row in rows])
-            latencies = [row["latency_us"] for row in rows]
-            request_rows: dict[str, list[dict[str, Any]]] = {}
-            for row in rows:
-                if row["request_id"] != "cleanup" and not row["request_id"].endswith(
-                    "-cleanup"
-                ):
-                    request_rows.setdefault(row["request_id"], []).append(row)
-            request_latencies = [
-                sum(row["latency_us"] for row in group)
-                for group in request_rows.values()
-            ]
-            request_arrival_lags = [
-                float(group[0]["arrival_lag_us"])
-                for group in request_rows.values()
-                if group[0]["arrival_lag_us"] is not None
-            ]
-            request_count = len(request_rows)
-            hit_requests = sum(
-                any(row["operation"] == "reuse" for row in group)
-                for group in request_rows.values()
+            metrics = (
+                dict(result["evidence"]["summary"])
+                if result.get("evidence_mode") == "compact"
+                else _summary_from_rows(rows, result)
             )
-            blocks_seen = sum(row["operation"] in ("produce", "reuse") for row in rows)
-            block_hits = sum(row["operation"] == "reuse" for row in rows)
-            misses = sum(row["operation"] == "miss" for row in rows)
-            storage_rows = [
-                row
-                for row in rows
-                if row["store_operation"] in ("put", "get", "remove")
-            ]
-            storage_wait = sum(row["latency_us"] for row in storage_rows)
             case_summaries.append(
                 {
                     "case_id": case_id,
                     "mode": result.get("mode"),
                     "target": result.get("target") or "",
-                    "operations": len(rows),
-                    "p50_latency_us": _percentile(latencies, 50),
-                    "p95_latency_us": _percentile(latencies, 95),
-                    "p99_latency_us": _percentile(latencies, 99),
-                    "operation_rate": round(len(rows) / (sum(latencies) / 1_000_000), 6)
-                    if sum(latencies) > 0
-                    else None,
-                    "request_count": request_count,
-                    "request_hit_rate": round(hit_requests / request_count, 6)
-                    if request_count
-                    else None,
-                    "block_hit_rate": round(block_hits / blocks_seen, 6)
-                    if blocks_seen
-                    else None,
-                    "miss_rate": round(misses / len(rows), 6) if rows else None,
-                    "request_p50_latency_us": _percentile(request_latencies, 50),
-                    "request_p95_latency_us": _percentile(request_latencies, 95),
-                    "request_arrival_lag_p50_us": _percentile(request_arrival_lags, 50),
-                    "request_arrival_lag_p95_us": _percentile(request_arrival_lags, 95),
-                    "request_arrival_lag_max_us": round(max(request_arrival_lags), 6)
-                    if request_arrival_lags
-                    else None,
-                    "storage_wait_us": round(storage_wait, 6),
-                    "replay_scale": result.get("pacing", {}).get("replay_scale", 0),
-                    "scheduled_span_us": result.get("pacing", {}).get(
-                        "scheduled_span_us"
-                    ),
-                    "processing_wall_us": result.get("pacing", {}).get(
-                        "processing_wall_us"
-                    ),
-                    "completion_lag_us": result.get("pacing", {}).get(
-                        "completion_lag_us"
-                    ),
+                    **metrics,
                     "cpu_utilization_pct": result.get("cpu_utilization_pct"),
-                    "produce": sum(row["operation"] == "produce" for row in rows),
-                    "reuse": sum(row["operation"] == "reuse" for row in rows),
-                    "evict": sum(row["operation"] == "evict" for row in rows),
-                    "miss": sum(row["operation"] == "miss" for row in rows),
-                    "local": sum(
-                        row["descriptor_target"] == "local_nvme" for row in rows
-                    ),
-                    "remote": sum(
-                        row["descriptor_target"] == "remote_nof" for row in rows
-                    ),
                 }
             )
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -821,6 +1563,8 @@ def _replay_command(args: argparse.Namespace) -> int:
         key_prefix=key_prefix,
         recompute_us=args.recompute_us,
         replay_scale=args.replay_scale,
+        compact_evidence=getattr(args, "compact_evidence", False),
+        compact_sample_limit=getattr(args, "compact_sample_limit", 128),
     )
     result.update(
         {
@@ -871,6 +1615,8 @@ def _main() -> int:
     replay_parser.add_argument("--run-id")
     replay_parser.add_argument("--recompute-us", type=int, default=1000)
     replay_parser.add_argument("--replay-scale", type=float, default=0.0)
+    replay_parser.add_argument("--compact-evidence", action="store_true")
+    replay_parser.add_argument("--compact-sample-limit", type=int, default=128)
     summarize_parser = subparsers.add_parser("summarize")
     summarize_parser.add_argument("result_dir", type=Path)
     summarize_parser.add_argument("--required-case", action="append", default=[])
