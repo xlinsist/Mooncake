@@ -1,0 +1,205 @@
+- generic [active] [ref=f6e1]:
+  - banner [ref=f6e2]:
+    - button "Skip to content" [ref=f6e4] [cursor=pointer]
+    - button "Accessibility Feedback" [ref=f6e7] [cursor=pointer]
+    - generic [ref=f6e10]:
+      - link [ref=f6e11] [cursor=pointer]:
+        - /url: /?FORM=Z9FD1
+        - heading "Back to Bing search" [level=1] [ref=f6e12]
+      - search [ref=f6e13]:
+        - button "Search" [ref=f6e16] [cursor=pointer]
+        - searchbox "Enter your search here - Search suggestions will show as you type" [ref=f6e17]: "\"miao-bookyan-16\""
+    - complementary "Account Rewards and Preferences" [ref=f6e18]:
+      - button "Microsoft Rewards" [ref=f6e19] [cursor=pointer]
+      - link "Sign in" [ref=f6e20] [cursor=pointer]:
+        - /url: javascript:void(0)
+    - generic:
+      - generic "国内版" [ref=f6e22]
+      - generic "国际版" [ref=f6e23] [cursor=pointer]
+    - navigation "Search Filter" [ref=f6e24]:
+      - list [ref=f6e25]:
+        - listitem [ref=f6e26]:
+          - link "Web" [ref=f6e27] [cursor=pointer]:
+            - /url: /?scope=web&FORM=HDRSC1
+        - listitem [ref=f6e28]:
+          - link "Images" [ref=f6e29] [cursor=pointer]:
+            - /url: /images/search?q=%22miao-bookyan-16%22&FORM=HDRSC2
+        - listitem [ref=f6e30]:
+          - link "Videos" [ref=f6e31] [cursor=pointer]:
+            - /url: /videos/search?q=%22miao-bookyan-16%22&FORM=HDRSC3
+        - listitem [ref=f6e32]:
+          - link "Academic" [ref=f6e33] [cursor=pointer]:
+            - /url: /academic/search?q=%22miao-bookyan-16%22&FORM=HDRSC4
+        - listitem [ref=f6e34]:
+          - link "Dict" [ref=f6e35] [cursor=pointer]:
+            - /url: /dict/search?q=%22miao-bookyan-16%22&FORM=HDRSC6
+        - listitem [ref=f6e36]:
+          - link "Maps" [ref=f6e37] [cursor=pointer]:
+            - /url: /maps?q=%22miao-bookyan-16%22&FORM=HDRSC7
+        - listitem [ref=f6e38]:
+          - link "Flights" [ref=f6e39] [cursor=pointer]:
+            - /url: /travel/search?q=%22miao-bookyan-16%22&m=flights&FORM=FBSCOP
+  - generic [ref=f6e40]:
+    - main "Search Results" [ref=f6e41]:
+      - generic [ref=f6e42]: About 129,000 results
+      - list [ref=f6e44]:
+        - listitem [ref=f6e45]:
+          - link "miao.company" [ref=f6e47] [cursor=pointer]:
+            - /url: https://www.miao.company/
+            - generic [ref=f6e52]:
+              - generic [ref=f6e53]: miao.company
+              - generic [ref=f6e54]: https://www.miao.company
+          - heading [level=2] [ref=f6e57]:
+            - link [ref=f6e58] [cursor=pointer]:
+              - /url: https://www.miao.company/
+              - strong [ref=f6e59]: MiAO
+          - paragraph [ref=f6e61]: Apr 24, 2026 · 创造超预期的游戏体验 | Crafting game experiences that surpass expectations.
+        - listitem [ref=f6e62]:
+          - link "sohu.com" [ref=f6e64] [cursor=pointer]:
+            - /url: https://www.sohu.com/a/921516035_121984121
+            - generic [ref=f6e69]:
+              - generic [ref=f6e70]: sohu.com
+              - generic [ref=f6e71]: https://www.sohu.com
+          - heading [level=2] [ref=f6e74]:
+            - link [ref=f6e75] [cursor=pointer]:
+              - /url: https://www.sohu.com/a/921516035_121984121
+              - text: 才成立三年的
+              - strong [ref=f6e76]: MiAO
+              - text: 游戏公司, 凭什么能获得心动网络1亿的投资?
+          - paragraph [ref=f6e78]: Aug 6, 2025 · MiAO现在正在研发的是一款"多人开放世界游戏"，主打游戏加社交的虚拟世界体验。 根据官网介绍，MiAO会提供以多 …
+        - listitem [ref=f6e79]:
+          - link "kangxizidian.com.cn" [ref=f6e81] [cursor=pointer]:
+            - /url: https://www.kangxizidian.com.cn/pinyin/miao.html
+            - generic [ref=f6e86]:
+              - generic [ref=f6e87]: kangxizidian.com.cn
+              - generic [ref=f6e88]: https://www.kangxizidian.com.cn › pinyin › miao.html
+          - heading [level=2] [ref=f6e91]:
+            - link [ref=f6e92] [cursor=pointer]:
+              - /url: https://www.kangxizidian.com.cn/pinyin/miao.html
+              - strong [ref=f6e93]: miao
+              - text: 拼音_
+              - strong [ref=f6e94]: miao
+              - text: 的一二三四声汉字 - 康熙字典
+          - paragraph [ref=f6e96]: miao拼音的字，miao拼音一到四声所有汉字一共有55个，miao拼音的字包括有妙、秒、淼、苗、缈、邈、描、劰、渺、庙、瞄、眇、 …
+        - listitem [ref=f6e97]:
+          - link "baidu.com" [ref=f6e99] [cursor=pointer]:
+            - /url: https://tieba.baidu.com/p/7840829084
+            - generic [ref=f6e104]:
+              - generic [ref=f6e105]: baidu.com
+              - generic [ref=f6e106]: https://tieba.baidu.com
+          - heading [level=2] [ref=f6e109]:
+            - link [ref=f6e110] [cursor=pointer]:
+              - /url: https://tieba.baidu.com/p/7840829084
+              - text: 大佬们，关于
+              - strong [ref=f6e111]: Miao
+              - text: 这个软件【lsplibrary吧】_百度贴吧
+          - paragraph [ref=f6e113]: 1 day ago · 大佬们，关于Miao..GG了，请问有替代版的么？就是一个猫爪图标的Miao插件~！ 大佬们，关于Miao..GG了，请问有替代 …
+        - listitem [ref=f6e114]:
+          - link "baidu.com" [ref=f6e116] [cursor=pointer]:
+            - /url: https://baike.baidu.com/item/%E7%BC%AA/904
+            - generic [ref=f6e121]:
+              - generic [ref=f6e122]: baidu.com
+              - generic [ref=f6e123]: https://baike.baidu.com › item
+          - heading [level=2] [ref=f6e126]:
+            - link "缪（汉语文字）_百度百科" [ref=f6e127] [cursor=pointer]:
+              - /url: https://baike.baidu.com/item/%E7%BC%AA/904
+          - paragraph [ref=f6e129]: 缪（拼音：miào、móu、miù、mù、liǎo）是汉语二级通用规范汉字 [1]。此字始见于战国文字，其本义为麻十束；引申指捆缚，缠 …
+        - listitem [ref=f6e130]:
+          - link "vtc.edu.hk" [ref=f6e132] [cursor=pointer]:
+            - /url: https://miao.vtc.edu.hk/
+            - generic [ref=f6e137]:
+              - generic [ref=f6e138]: vtc.edu.hk
+              - generic [ref=f6e139]: https://miao.vtc.edu.hk
+          - heading [level=2] [ref=f6e142]:
+            - link "Mainland and International Affairs Office" [ref=f6e143] [cursor=pointer]:
+              - /url: https://miao.vtc.edu.hk/
+          - paragraph [ref=f6e145]: Address：14/F, VTC Tower, 27 Wood Road, Wanchai, Hong Kong Tel： (852) 2836 1705 Fax： (852) 2891 2372 E …
+        - listitem [ref=f6e146]:
+          - link "vtc.edu.hk" [ref=f6e148] [cursor=pointer]:
+            - /url: https://miao.vtc.edu.hk/tc
+            - generic [ref=f6e153]:
+              - generic [ref=f6e154]: vtc.edu.hk
+              - generic [ref=f6e155]: https://miao.vtc.edu.hk › tc
+          - heading [level=2] [ref=f6e158]:
+            - link "職業訓練局中國內地及國際事務" [ref=f6e159] [cursor=pointer]:
+              - /url: https://miao.vtc.edu.hk/tc
+          - paragraph [ref=f6e161]: 地址：香港灣仔活道27號職業訓練局大樓14樓 電話：(852) 2836 1705 傳真：(852) 2891 2372 電郵：miao@vtc.edu.hk 快速連結 關注 …
+        - listitem [ref=f6e162]:
+          - link "36kr.com" [ref=f6e164] [cursor=pointer]:
+            - /url: https://pitchhub.36kr.com/project/2160866478074628
+            - generic [ref=f6e169]:
+              - generic [ref=f6e170]: 36kr.com
+              - generic [ref=f6e171]: https://pitchhub.36kr.com › project
+          - heading [level=2] [ref=f6e174]:
+            - link "MiAO | 项目信息-36氪":
+              - /url: https://pitchhub.36kr.com/project/2160866478074628
+              - strong [ref=f6e175] [cursor=pointer]: MiAO
+              - text: "| 项目信息-36氪"
+          - paragraph [ref=f6e177]: Mar 7, 2023 · MiAO是一家游戏+社交平台，由前巨人CEO吴萌创立，MiAO的第一款全球化产品正在研发之中，这是一款主打多人玩 …
+        - listitem [ref=f6e178]:
+          - link "wondershare.cn" [ref=f6e180] [cursor=pointer]:
+            - /url: https://miao.wondershare.cn/
+            - generic [ref=f6e185]:
+              - generic [ref=f6e186]: wondershare.cn
+              - generic [ref=f6e187]: https://miao.wondershare.cn
+          - heading "【官网】万兴喵影2026_视频免费剪，AI更出片" [level=2] [ref=f6e190]:
+            - link "【官网】万兴喵影2026_视频免费剪，AI更出片":
+              - /url: https://miao.wondershare.cn/
+          - paragraph [ref=f6e192]: 万兴喵影 Mac 版 现已全面支持 Metal 渲染技术，充分利用 Apple 的高性能图形架构，大幅提升视频剪辑与渲染效率。 通过 Metal 的 …
+        - listitem [ref=f6e193]:
+          - link "hanyuguoxue.com" [ref=f6e195] [cursor=pointer]:
+            - /url: https://www.hanyuguoxue.com/zidian/pinyin-miao
+            - generic [ref=f6e200]:
+              - generic [ref=f6e201]: hanyuguoxue.com
+              - generic [ref=f6e202]: https://www.hanyuguoxue.com › zidian › pinyin-miao
+          - heading [level=2] [ref=f6e205]:
+            - link "拼音miao的汉字_miao拼音的字_拼音miao-汉语国学":
+              - /url: https://www.hanyuguoxue.com/zidian/pinyin-miao
+              - text: 拼音
+              - strong [ref=f6e206] [cursor=pointer]: miao
+              - text: 的汉字_
+              - strong [ref=f6e207] [cursor=pointer]: miao
+              - text: 拼音的字_拼音
+              - strong [ref=f6e208] [cursor=pointer]: miao
+              - text: "-汉语国学"
+          - paragraph [ref=f6e210]: 拼音 miao 的字 共检索到55个拼音miao的字 本汉语字典查找到 拼音miao的字 55个，其中拼音miāo的字1个。 拼音miáo的字14个。 拼 …
+        - listitem [ref=f6e211]:
+          - text: Some results are removed in response to a notice of local law requirement. For more information, please see
+          - link "here" [ref=f6e212] [cursor=pointer]:
+            - /url: http://go.microsoft.com/fwlink/?LinkID=617350
+          - text: .
+        - listitem [ref=f6e213]:
+          - navigation "More results for \"miao-bookyan-16\"":
+            - list:
+              - listitem [ref=f6e214]:
+                - generic "Page 1" [ref=f6e215]: "1"
+              - listitem [ref=f6e216]:
+                - link "Page 2" [ref=f6e217] [cursor=pointer]:
+                  - /url: /search?q=%22miao-bookyan-16%22&FPIG=E3169713D1AC46FF801016266C9A4464&first=11&FORM=PERE
+                  - text: "2"
+              - listitem [ref=f6e218]:
+                - link "Page 3" [ref=f6e219] [cursor=pointer]:
+                  - /url: /search?q=%22miao-bookyan-16%22&FPIG=E3169713D1AC46FF801016266C9A4464&first=21&FORM=PERE1
+                  - text: "3"
+              - listitem [ref=f6e220]:
+                - link "Next page" [ref=f6e221] [cursor=pointer]:
+                  - /url: /search?q=%22miao-bookyan-16%22&FPIG=E3169713D1AC46FF801016266C9A4464&first=11&FORM=PORE
+    - complementary "Additional Results" [ref=f6e222]
+    - complementary "Explore More"
+  - contentinfo [ref=f6e223]:
+    - list [ref=f6e225]:
+      - listitem [ref=f6e226]:
+        - link "增值电信业务经营许可证：合字B2-20090007" [ref=f6e227] [cursor=pointer]:
+          - /url: https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=caf04fa4-bd8a-4d9e-80b6-2aa1b86c1509&type=yreport
+      - listitem [ref=f6e228]:
+        - link "京ICP备10036305号-7" [ref=f6e229] [cursor=pointer]:
+          - /url: https://beian.miit.gov.cn
+      - listitem [ref=f6e230]:
+        - link "京公网安备11010802047360号" [ref=f6e231] [cursor=pointer]:
+          - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010802047360
+      - listitem [ref=f6e232]:
+        - link "Privacy" [ref=f6e233] [cursor=pointer]:
+          - /url: http://go.microsoft.com/fwlink/?LinkId=521839
+      - listitem [ref=f6e234]:
+        - link "Terms" [ref=f6e235] [cursor=pointer]:
+          - /url: http://go.microsoft.com/fwlink/?LinkID=246338

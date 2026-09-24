@@ -1,0 +1,58 @@
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e2]:
+    - button "Skip to content" [ref=f2e4] [cursor=pointer]
+    - button "Accessibility Feedback" [ref=f2e7] [cursor=pointer]
+    - generic [ref=f2e10]:
+      - link [ref=f2e11] [cursor=pointer]:
+        - /url: /?FORM=Z9FD1
+        - heading "Back to Bing search" [level=1] [ref=f2e12]
+      - search [ref=f2e13]:
+        - button "Search" [ref=f2e16] [cursor=pointer]
+        - searchbox "Enter your search here - Search suggestions will show as you type" [ref=f2e17]: site:zhihu.com/p/miao-bookyan-16 文献
+    - complementary "Account Rewards and Preferences" [ref=f2e18]:
+      - button "Microsoft Rewards" [ref=f2e19] [cursor=pointer]
+      - link "Sign in" [ref=f2e20] [cursor=pointer]:
+        - /url: javascript:void(0)
+    - generic:
+      - generic "国内版" [ref=f2e22]
+      - generic "国际版" [ref=f2e23] [cursor=pointer]
+    - navigation "Search Filter" [ref=f2e24]:
+      - list [ref=f2e25]:
+        - listitem [ref=f2e26]:
+          - link "Web" [ref=f2e27] [cursor=pointer]:
+            - /url: /?scope=web&FORM=HDRSC1
+        - listitem [ref=f2e28]:
+          - link "Images" [ref=f2e29] [cursor=pointer]:
+            - /url: /images/search?q=site%3azhihu.com%2fp%2fmiao-bookyan-16+%e6%96%87%e7%8c%ae&FORM=HDRSC2
+        - listitem [ref=f2e30]:
+          - link "Videos" [ref=f2e31] [cursor=pointer]:
+            - /url: /videos/search?q=site%3azhihu.com%2fp%2fmiao-bookyan-16+%e6%96%87%e7%8c%ae&FORM=HDRSC3
+        - listitem [ref=f2e32]:
+          - link "Academic" [ref=f2e33] [cursor=pointer]:
+            - /url: /academic/search?q=site%3azhihu.com%2fp%2fmiao-bookyan-16+%e6%96%87%e7%8c%ae&FORM=HDRSC4
+        - listitem [ref=f2e34]:
+          - link "Dict" [ref=f2e35] [cursor=pointer]:
+            - /url: /dict/search?q=site%3azhihu.com%2fp%2fmiao-bookyan-16+%e6%96%87%e7%8c%ae&FORM=HDRSC6
+        - listitem [ref=f2e36]:
+          - link "Maps" [ref=f2e37] [cursor=pointer]:
+            - /url: /maps?q=site%3azhihu.com%2fp%2fmiao-bookyan-16+%e6%96%87%e7%8c%ae&FORM=HDRSC7
+        - listitem [ref=f2e38]:
+          - link "Flights" [ref=f2e39] [cursor=pointer]:
+            - /url: /travel/search?q=site%3azhihu.com%2fp%2fmiao-bookyan-16+%e6%96%87%e7%8c%ae&m=flights&FORM=FBSCOP
+  - contentinfo [ref=f2e40]:
+    - list [ref=f2e42]:
+      - listitem [ref=f2e43]:
+        - link "增值电信业务经营许可证：合字B2-20090007" [ref=f2e44] [cursor=pointer]:
+          - /url: https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=caf04fa4-bd8a-4d9e-80b6-2aa1b86c1509&type=yreport
+      - listitem [ref=f2e45]:
+        - link "京ICP备10036305号-7" [ref=f2e46] [cursor=pointer]:
+          - /url: https://beian.miit.gov.cn
+      - listitem [ref=f2e47]:
+        - link "京公网安备11010802047360号" [ref=f2e48] [cursor=pointer]:
+          - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010802047360
+      - listitem [ref=f2e49]:
+        - link "Privacy" [ref=f2e50] [cursor=pointer]:
+          - /url: http://go.microsoft.com/fwlink/?LinkId=521839
+      - listitem [ref=f2e51]:
+        - link "Terms" [ref=f2e52] [cursor=pointer]:
+          - /url: http://go.microsoft.com/fwlink/?LinkID=246338

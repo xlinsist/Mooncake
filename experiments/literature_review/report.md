@@ -98,3 +98,47 @@
 - “I/O 不是简单 append，需重叠/选择性恢复”：`HCache`、`CacheBlend`、`Cake`、`InfiniGen`、`CacheGen`。
 - “NVMe 实际代价和 128 KiB I/O 特征”：`Ren et al.` 的 NVMe characterization。
 - Novelty 边界应直接写成：已有工作管理的是**缓存策略、传输路径或分布式资源池**；本文研究的是**对上层透明的 local-NVMe/NVMe-oF 对象 Store，以及跨后端一致、可恢复的生命周期语义**。
+
+## 面向文件系统/NVMe-oF 的近三年 A 会补充
+
+**证据审计说明：**下方新增表按“相关性/启示/边界”组织；逐篇的 Title、Year/Month、Venue、First Author、Affiliation、GPU/存储硬件、Technique、Level、Abstract、TLDR 完整字段见紧接其后的“严格窗口内论文的结构化条目”。USENIX 官方页面已核验 CETOFS、RASK、HiDPU、Ananke、NVLog、SquirrelFS、Ethane、D2FS、GeminiFS 和 OrchFS 的作者、venue、月份与摘要；OpenAlex 仅用于召回，不作为 venue 的唯一证据。
+
+针对 ASPLOS/MLSys 的 OpenAlex 短查询未发现比主表更直接的、已正式发表的 local-NVMe/NVMe-oF 文件系统论文；召回的 `MirrorKV`、`CaaS-LSM`、`DataStates-LLM` 等属于 hybrid-cloud KV/LLM 状态管理，作为相邻工作而非 NVMe-oF 文件系统基线。该结果是检索证据，不是“不存在”的证明。
+
+KV-cache 论文之外，下面几项是对 C1--C3 更有解释力的系统先例。它们不一定以 LLM 为目标，但直接触及远端块设备的数据路径、地址管理、元数据边界和恢复语义。会议归属应以最终出版版本为准；OpenAlex 对部分系统论文只返回题名和预印本记录，因此这里明确标出证据强度。
+
+### 严格窗口内论文的结构化条目
+
+| Title | Year / Month; Venue | First author / affiliation | GPU architecture / storage hardware | Scheduling technique | Scheduling level | Abstract | TLDR |
+|---|---|---|---|---|---|---|---|
+| CETOFS: A High-Performance File System with Host-Server Collaboration for Remote Storage | 2026/02; FAST’26 | Jia et al.; affiliation per USENIX author list | NVMe-oF/RDMA remote NVMe SSD; accelerator not required | Host/server split, server-side permission and concurrency control, failure-atomic remote I/O | filesystem/storage runtime | A userspace data path plus kernel control path collaborates with the remote server to reduce remote I/O overhead while preserving file-system semantics. | Closest filesystem precedent for C1+C2. |
+| “Range as a Key” is the Key! (RASK) | 2026/02; FAST’26 | Zhao et al.; affiliation per USENIX author list | Cloud block-store nodes; accelerator not required | Range-key mapping index with split/merge and range-aware GC | storage metadata/index layer | Compresses LBA-to-location metadata and handles overlap and fragmentation in a cloud block store. | Strong C3 baseline for compact address-space metadata. |
+| HiDPU: A DPU-Oriented Hybrid Indexing Scheme for Disaggregated Storage Systems | 2025/02; FAST’25 | Zhu et al.; affiliation per USENIX author list | DPU-assisted disaggregated storage; accelerator is DPU, not GPU | Hybrid accurate/learned index and two-phase asynchronous index update | storage metadata/index layer | Reduces memory and CPU cost of logical-to-physical translation while keeping DPU and host indexes consistent. | Direct evidence that mapping metadata is a first-class bottleneck. |
+| Ananke: Fast, Transparent Filesystem Microkernel Recovery | 2025/02; FAST’25 | Jing Liu; Microsoft Research / University of Wisconsin–Madison | Commodity filesystem storage; GPU not required | Process-crash log plus on-disk journal recovery | filesystem lifecycle/recovery layer | Records in-flight syscall state and restores it transparently after a filesystem-service crash, with lossless recovery in extensive fault injection. | Reference for transparent recovery, but not network failure recovery. |
+| NVLog: A Transparent NVM Write-ahead Log for Disk File Systems | 2025/02; FAST’25 | Wang et al.; affiliation per USENIX author list | NVM plus disk; GPU not required | Byte-granular sync absorption, journaling, recovery and GC | filesystem persistence layer | Adds a transparent NVM WAL beneath legacy disk filesystems and optimizes sync-heavy workloads while retaining crash recovery. | Useful C2 precedent for separating logical commit from backend persistence. |
+| SquirrelFS: Using the Rust Compiler to Check File-System Crash Consistency | 2024/07; OSDI’24 | LeBlanc et al.; affiliation per USENIX author list | Persistent-memory filesystem; GPU not required | Rust typestate and synchronous soft updates enforce metadata ordering | filesystem metadata/consistency layer | Encodes crash-consistency ordering in types so invalid metadata update sequences are rejected at compile time. | Shows how C2 invariants can be made explicit and checkable. |
+| Ethane: An Asymmetric File System for Disaggregated Persistent Memory | 2024/07; USENIX ATC’24 | Cai et al.; affiliation per USENIX author list | Disaggregated persistent memory; GPU not required | Control/data-plane separation and locality-aware access | filesystem architecture layer | Separates metadata/control operations from data-plane operations to match asymmetric disaggregated resources. | Strong C1/C3 architectural analogy; transport differs from NVMe-oF. |
+
+| 相关性 | 论文（年份，venue） | 对 C1--C3 的直接启示 | 与本文的边界 |
+|---|---|---|---|
+| **直接** | [**RIO: Order-Preserving and CPU-Efficient Remote Storage Access**](https://doi.org/10.1145/3552326.3567495)（2023/05，EuroSys；严格三年窗口外的边界基础工作） | 研究 NVMe-over-RDMA 远程存储访问的数据路径和请求重排，在保持顺序语义的同时降低 CPU 开销；说明 remote block access 需要 runtime 层承担路由、队列和完成顺序（C1/C3）。 | 关注访问机制，不定义 KV object 的持久 metadata 或跨 local/remote 的生命周期事务。 |
+| **直接** | [**CETOFS: A High-Performance File System with Host-Server Collaboration for Remote Storage**](https://www.usenix.org/conference/fast26/presentation/jia)（2026，FAST） | 明确面向 NVMe-oF/RDMA 远端 SSD；用户态数据面与内核控制面协作，将权限检查、并发控制和 failure-atomic I/O 下沉远端 server，是 C1/C2 最接近的文件系统先例。 | 重点是远端存储数据路径；没有本文 local-NVMe 与 remote-NVMe 的统一 placement 和 KV object API。 |
+| **直接** | **HiDPU: A DPU-Oriented Hybrid Indexing Scheme for Disaggregated Storage Systems**（2025，FAST） | 直接处理 disaggregated storage 中逻辑地址到物理地址的索引、索引内存占用和异步更新一致性；是 C3（metadata/address-space）的强基线。 | 面向 DPU/索引基础设施，不定义 KV object 的跨后端生命周期。 |
+| **直接** | **Volley: Accelerating Write-Read Orders in Disaggregated Storage**（2024，EuroSys） | 研究 NVMe-oF 类 disaggregated storage 中 writeback cache 的写后读顺序与并发利用率；可作为 C1 路径透明和 C2 可见性/ordering 的参照。 | 优化 I/O ordering，不定义跨后端对象事务、删除回收或重启路由恢复。 |
+| **直接** | **Disaggregating RocksDB: A Production Experience**（2023，SIGMOD） | 将计算与存储解耦后，缓存、compaction、故障恢复和一致性边界必须显式重做；适合支撑“透明化把复杂性下沉到存储层”的论点（C1--C3）。 | 面向 LSM/KV 数据库，元数据和 compaction 语义不同于短生命周期 KV cache。 |
+| **直接** | **Ethane: An Asymmetric File System for Disaggregated Persistent Memory**（2024，USENIX ATC） | 将控制面文件系统与数据面文件系统分离，以适应 disaggregated persistent memory 的非对称资源；支撑 C1 的拓扑隐藏与 C3 的控制/数据元数据边界。 | 持久内存互连与 NVMe-oF 不同，不能直接外推其一致性和故障模型。 |
+| **相邻** | **DDS: DPU-Optimized Disaggregated Storage**（2024，PVLDB） | 用 DPU 将远端存储数据路径和管理操作下沉，展示 topology-independent access 可以通过中间层实现，同时要处理资源隔离和元数据开销（C1/C3）。 | DPU 优化的是块存储基础设施，未定义 inference-facing object lifecycle。 |
+| **边界基础** | **eZNS: An Elastic Zoned Namespace for Commodity ZNS SSDs**（2023/07，OSDI） | 以 zone arbiter 和分层调度器统一逻辑 zone 分配、拥塞控制和回收；说明设备地址空间和上层抽象之间需要显式控制面（C1/C3）。 | 早于严格的 2023-09-09 三年窗口；面向本地 ZNS SSD，不涉及 NVMe-oF 多 target 的路由与副本恢复。 |
+| **相邻** | **Prism: Optimizing Key-Value Store for Modern Heterogeneous Storage Devices**（2023，OpenAlex 收录；正式 venue 需核对） | 针对异构设备的 KV layout、tier placement 和访问特征做联合优化，说明“一个 KV API”并不自动带来统一性能，需要设备-aware policy（C1/C3）。 | 主要是设备内 placement/layout 优化，没有 NVMe-oF 多节点副本提交和恢复协议。 |
+| **相邻** | **Disaggregated RAID Storage in Modern Datacenters**（2023，系统论文/venue 以正式版本为准） | 远端盘池的条带化、重建和故障域管理说明地址空间不仅是 `device:LBA` 映射，还包含副本/条带元数据与恢复状态（C3）。 | RAID 可靠性目标强于 cache store；本文可借鉴 metadata state machine，但不应直接声称功能等价。 |
+| **相邻** | [**“Range as a Key” is the Key! Fast and Compact Cloud Block Store Index with RASK**](https://www.usenix.org/conference/fast26/presentation/zhao)（2026，FAST） | 用 range-key 索引维护 cloud block store 的 LBA 到后端位置映射，并处理分裂、合并、GC 和碎片；是 C3 地址空间元数据的直接参照。 | 面向云 block store 索引，未涉及 KV 生命周期或 local/remote 统一 API。 |
+
+### C1--C3 的综合结论
+
+1. **C1（backend transparency）**：Mooncake/LMCache 给出了 inference 侧的统一 API；CETOFS、RIO、DDS 说明要把路径、队列和 CPU/DPU 处理隐藏起来，同时保留权限与性能观测边界。透明 API 本身不保证正确 placement，策略仍需明确资源视图与故障模型。
+2. **C2（unified object lifecycle）**：HCache、MemServe、Ananke、NVLog 和 CETOFS 描述保存、恢复、释放及 crash-consistent/failure-atomic commit；Volley 与 Disaggregating RocksDB 补充了写后读可见性、ordering、compaction/recovery 边界。本文应把 `prepare → data write → metadata commit → visible → delete/reclaim` 写成显式状态机，并定义超时、重复提交和回滚。
+3. **C3（metadata/address-space management）**：PagedAttention 隐藏 GPU page，Mooncake 隐藏 block/replica，HiDPU 处理 disaggregated mapping index，RIO/DDS 隐藏远端请求路径；文件系统方向的真正空缺是统一维护 `object_id → backend → node/target → namespace/device → extent/LBA → version/checksum`，并在 target 不可达或客户端重启后重建可路由状态。
+
+### A 会优先阅读顺序
+
+若时间有限，建议按 **CETOFS → RASK → HiDPU → Volley → Ethane → Ananke/NVLog → Mooncake/HCache** 阅读：前四项最能补足 NVMe-oF 文件系统的数据路径、地址映射、ordering 和 metadata 视角，Ananke/NVLog 补足恢复与提交语义，后两项连接到 KV-cache workload。FAST'25 官方页面还提供 **GeminiFS、D2FS、OrchFS、DJFS、ScaleLFS**，分别对应 GPU/NVMe 透明接口、设备/文件系统联合回收、统一 mapping、目录级事务和并发 GC，可作为 C1--C3 的扩展阅读。Volley 的正式出处是 EuroSys 2024（DOI: 10.1145/3627703.3650090），RIO 的正式出处是 EuroSys 2023（DOI: 10.1145/3552326.3567495）；两者都不是 FAST/OSDI。

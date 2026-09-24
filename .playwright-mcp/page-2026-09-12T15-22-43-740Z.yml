@@ -1,0 +1,168 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - button "Skip to content" [ref=e4] [cursor=pointer]
+    - button "Accessibility Feedback" [ref=e7] [cursor=pointer]
+    - generic [ref=e10]:
+      - link [ref=e11] [cursor=pointer]:
+        - /url: /?FORM=Z9FD1
+        - heading "Back to Bing search" [level=1] [ref=e12]
+      - search [ref=e13]:
+        - button "Search" [ref=e16] [cursor=pointer]
+        - searchbox "Enter your search here - Search suggestions will show as you type" [ref=e17]: "\"AugeFS\" pdf"
+    - complementary "Account Rewards and Preferences" [ref=e18]:
+      - button "Microsoft Rewards" [ref=e19] [cursor=pointer]
+      - link "Sign in" [ref=e20] [cursor=pointer]:
+        - /url: javascript:void(0)
+    - generic:
+      - generic "国内版" [ref=e22]
+      - generic "国际版" [ref=e23] [cursor=pointer]
+    - navigation "Search Filter" [ref=e24]:
+      - list [ref=e25]:
+        - listitem [ref=e26]:
+          - link "Web" [ref=e27] [cursor=pointer]:
+            - /url: /?scope=web&FORM=HDRSC1
+        - listitem [ref=e28]:
+          - link "Images" [ref=e29] [cursor=pointer]:
+            - /url: /images/search?q=%22AugeFS%22+pdf&FORM=HDRSC2
+        - listitem [ref=e30]:
+          - link "Videos" [ref=e31] [cursor=pointer]:
+            - /url: /videos/search?q=%22AugeFS%22+pdf&FORM=HDRSC3
+        - listitem [ref=e32]:
+          - link "Academic" [ref=e33] [cursor=pointer]:
+            - /url: /academic/search?q=%22AugeFS%22+pdf&FORM=HDRSC4
+        - listitem [ref=e34]:
+          - link "Dict" [ref=e35] [cursor=pointer]:
+            - /url: /dict/search?q=%22AugeFS%22+pdf&FORM=HDRSC6
+        - listitem [ref=e36]:
+          - link "Maps" [ref=e37] [cursor=pointer]:
+            - /url: /maps?q=%22AugeFS%22+pdf&FORM=HDRSC7
+        - listitem [ref=e38]:
+          - link "Flights" [ref=e39] [cursor=pointer]:
+            - /url: /travel/search?q=%22AugeFS%22+pdf&m=flights&FORM=FBSCOP
+  - generic [ref=e40]:
+    - main "Search Results" [ref=e41]:
+      - list [ref=e42]:
+        - listitem [ref=e43]:
+          - link "zhihu.com" [ref=e45] [cursor=pointer]:
+            - /url: https://www.zhihu.com/question/656427239
+            - generic [ref=e50]:
+              - generic [ref=e51]: zhihu.com
+              - generic [ref=e52]: https://www.zhihu.com › question
+          - heading [level=2] [ref=e55]:
+            - link "Z-Library最新网址？ - 知乎" [ref=e56] [cursor=pointer]:
+              - /url: https://www.zhihu.com/question/656427239
+          - paragraph [ref=e58]: Jun 10, 2026 · zlib大家都很熟悉，是一个世界知名的在线图书馆网站，很多人都用来阅读电子书和文献，但是它有版权问题，导致了 …
+        - listitem [ref=e59]:
+          - link "zhihu.com" [ref=e61] [cursor=pointer]:
+            - /url: https://www.zhihu.com/column/c_2005367702202643016
+            - generic [ref=e66]:
+              - generic [ref=e67]: zhihu.com
+              - generic [ref=e68]: https://www.zhihu.com › column
+          - heading [level=2] [ref=e71]:
+            - link "z-library有效链接分享 - 知乎" [ref=e72] [cursor=pointer]:
+              - /url: https://www.zhihu.com/column/c_2005367702202643016
+          - paragraph [ref=e74]: Aug 21, 2026 · 定时更新Z-library访问镜像网站链接，有时候会通知违规导致发不了
+        - listitem [ref=e75]:
+          - link "liverpool.ac.uk" [ref=e77] [cursor=pointer]:
+            - /url: https://libanswers.liverpool.ac.uk/faq/49300
+            - generic [ref=e82]:
+              - generic [ref=e83]: liverpool.ac.uk
+              - generic [ref=e84]: https://libanswers.liverpool.ac.uk › faq
+          - heading "Does the Library sell stationery? - Library Help" [level=2] [ref=e87]:
+            - link "Does the Library sell stationery? - Library Help":
+              - /url: https://libanswers.liverpool.ac.uk/faq/49300
+          - paragraph [ref=e89]: Aug 29, 2026 · Does the library subscribe to UpToDate.com? Can I donate books to the Library? Does the Library subscribe to …
+        - listitem [ref=e90]:
+          - link "liverpool.ac.uk" [ref=e92] [cursor=pointer]:
+            - /url: https://libanswers.liverpool.ac.uk/faq/49395
+            - generic [ref=e97]:
+              - generic [ref=e98]: liverpool.ac.uk
+              - generic [ref=e99]: https://libanswers.liverpool.ac.uk › faq
+          - heading "Where can I access Eurocodes? - Library Help" [level=2] [ref=e102]:
+            - link "Where can I access Eurocodes? - Library Help":
+              - /url: https://libanswers.liverpool.ac.uk/faq/49395
+          - paragraph [ref=e104]: Aug 25, 2026 · Where is the archaeology library? Which Library should I use for my subject? How can I access online resources? …
+        - listitem [ref=e105]:
+          - link "liverpool.ac.uk" [ref=e107] [cursor=pointer]:
+            - /url: https://libanswers.liverpool.ac.uk/faq/173393
+            - generic [ref=e112]:
+              - generic [ref=e113]: liverpool.ac.uk
+              - generic [ref=e114]: https://libanswers.liverpool.ac.uk › faq
+          - heading "Are lockers available in the library? - Library Help" [level=2] [ref=e117]:
+            - link "Are lockers available in the library? - Library Help":
+              - /url: https://libanswers.liverpool.ac.uk/faq/173393
+          - paragraph [ref=e119]: Aug 28, 2026 · Harold Cohen Library - in the Postgraduate Room on the Upper Ground Floor Sydney Jones Library - in the …
+        - listitem [ref=e120]:
+          - link "liverpool.ac.uk" [ref=e122] [cursor=pointer]:
+            - /url: https://libanswers.liverpool.ac.uk/faq/49622
+            - generic [ref=e127]:
+              - generic [ref=e128]: liverpool.ac.uk
+              - generic [ref=e129]: https://libanswers.liverpool.ac.uk › faq
+          - heading "What are standards? How can I find them? - Library Help" [level=2] [ref=e132]:
+            - link "What are standards? How can I find them? - Library Help":
+              - /url: https://libanswers.liverpool.ac.uk/faq/49622
+          - paragraph [ref=e134]: Aug 25, 2026 · The University of Liverpool Library subscribes to ASTM Compass, giving university staff and students full-text access …
+        - listitem [ref=e135]:
+          - link "zhihu.com" [ref=e137] [cursor=pointer]:
+            - /url: https://www.zhihu.com/question/636639725/answers/updated
+            - generic [ref=e142]:
+              - generic [ref=e143]: zhihu.com
+              - generic [ref=e144]: https://www.zhihu.com › question › answers › updated
+          - heading "zlibrary收费了吗？ - 知乎" [level=2] [ref=e147]:
+            - link "zlibrary收费了吗？ - 知乎":
+              - /url: https://www.zhihu.com/question/636639725/answers/updated
+          - paragraph [ref=e149]: 不收费，收费都是假网址！！ 2026年2月更新同步最新入口地址 一键访问： zlibrary最新网址入口 （2026.2.20正常使用） 一键访问： …
+        - listitem [ref=e150]:
+          - link "liverpool.ac.uk" [ref=e152] [cursor=pointer]:
+            - /url: https://libanswers.liverpool.ac.uk/faq/87841
+            - generic [ref=e157]:
+              - generic [ref=e158]: liverpool.ac.uk
+              - generic [ref=e159]: https://libanswers.liverpool.ac.uk › faq
+          - heading "Does the Library have binding services? - Library Help" [level=2] [ref=e162]:
+            - link "Does the Library have binding services? - Library Help":
+              - /url: https://libanswers.liverpool.ac.uk/faq/87841
+          - paragraph [ref=e164]: Sep 1, 2026 · Spirals and covers for binding are available to buy from the Library Help Desks during staffed hours. The Spiral Binding …
+        - listitem [ref=e165]:
+          - link "liverpool.ac.uk" [ref=e167] [cursor=pointer]:
+            - /url: https://libanswers.liverpool.ac.uk/faq/49309
+            - generic [ref=e172]:
+              - generic [ref=e173]: liverpool.ac.uk
+              - generic [ref=e174]: https://libanswers.liverpool.ac.uk › faq
+          - heading "What library services are available to Alumni of the University of ..." [level=2] [ref=e177]:
+            - link "What library services are available to Alumni of the University of ...":
+              - /url: https://libanswers.liverpool.ac.uk/faq/49309
+          - paragraph [ref=e179]: 5 days ago · Loans are automatically renewed unless requested by another customer. The only exception to this are Library Use …
+        - listitem [ref=e180]:
+          - link "zhihu.com" [ref=e182] [cursor=pointer]:
+            - /url: https://www.zhihu.com/question/665124950
+            - generic [ref=e187]:
+              - generic [ref=e188]: zhihu.com
+              - generic [ref=e189]: https://www.zhihu.com › question
+          - heading "现在如何访问z-library图书馆? - 知乎" [level=2] [ref=e192]:
+            - link "现在如何访问z-library图书馆? - 知乎":
+              - /url: https://www.zhihu.com/question/665124950
+          - paragraph [ref=e194]: Aug 29, 2025 · 或者找个人少的时候，凌晨。 我在Z-Library下载都能下载下来，我遇见过最大的是60多MB，第一次也是没下载下载。 …
+        - listitem [ref=e195]:
+          - text: Some results are removed in response to a notice of local law requirement. For more information, please see
+          - link "here" [ref=e196] [cursor=pointer]:
+            - /url: http://go.microsoft.com/fwlink/?LinkID=617350
+          - text: .
+    - complementary "Additional Results" [ref=e197]
+    - complementary "Explore More"
+  - contentinfo [ref=e198]:
+    - list [ref=e200]:
+      - listitem [ref=e201]:
+        - link "增值电信业务经营许可证：合字B2-20090007" [ref=e202] [cursor=pointer]:
+          - /url: https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=caf04fa4-bd8a-4d9e-80b6-2aa1b86c1509&type=yreport
+      - listitem [ref=e203]:
+        - link "京ICP备10036305号-7" [ref=e204] [cursor=pointer]:
+          - /url: https://beian.miit.gov.cn
+      - listitem [ref=e205]:
+        - link "京公网安备11010802047360号" [ref=e206] [cursor=pointer]:
+          - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010802047360
+      - listitem [ref=e207]:
+        - link "Privacy" [ref=e208] [cursor=pointer]:
+          - /url: http://go.microsoft.com/fwlink/?LinkId=521839
+      - listitem [ref=e209]:
+        - link "Terms" [ref=e210] [cursor=pointer]:
+          - /url: http://go.microsoft.com/fwlink/?LinkID=246338
